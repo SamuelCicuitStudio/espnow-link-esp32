@@ -366,6 +366,8 @@ class ManagementService : public IEventSink {
     uint32_t started_ms = 0;
     uint32_t timeout_ms = 0;
     std::vector<MacAddress> peers{};
+    std::vector<uint8_t> role_codes{};
+    std::vector<std::string> setting_keys{};
     std::vector<uint32_t> corr_ids{};
     std::vector<uint8_t> acked{};
   };

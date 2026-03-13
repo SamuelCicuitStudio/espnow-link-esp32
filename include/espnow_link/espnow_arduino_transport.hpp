@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "espnow_link/transport.hpp"
 
@@ -47,7 +48,16 @@ class EspNowArduinoTransport : public ITransport {
   uint8_t getChannel() const override { return channel_; }
 
  private:
+  struct PeerCacheEntry {
+    MacAddress mac{};
+    bool encrypted = false;
+    bool has_lmk = false;
+    LmkKey lmk{};
+  };
+
   static MacAddress toMac(const uint8_t* m);
+  bool upsertPeerCacheEntry_(const MacAddress& mac, bool encrypted, const LmkKey* lmk);
+  void erasePeerCacheEntry_(const MacAddress& mac);
 
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
   static void onRecvV3(const esp_now_recv_info_t* info, const uint8_t* data, int len);
@@ -59,6 +69,7 @@ class EspNowArduinoTransport : public ITransport {
   EspNowManager* mgr_ = nullptr;
   uint8_t channel_ = 1;
   bool encrypted_default_ = false;
+  std::vector<PeerCacheEntry> peer_cache_{};
 };
 
 #endif  // ARDUINO

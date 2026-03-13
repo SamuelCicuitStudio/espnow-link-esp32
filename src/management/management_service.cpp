@@ -67,6 +67,37 @@ bool isZeroMacAddress(const MacAddress& mac) {
   return true;
 }
 
+bool isChainRoleCode(uint8_t role_code) {
+  return role_code == static_cast<uint8_t>(kProfileSens & 0xFFU) ||
+         role_code == static_cast<uint8_t>(kProfileSemu & 0xFFU) ||
+         role_code == static_cast<uint8_t>(kProfileRelay & 0xFFU) ||
+         role_code == static_cast<uint8_t>(kProfileRemu & 0xFFU);
+}
+
+const char* channelSettingKeyForRole(uint8_t role_code) {
+  if (role_code == static_cast<uint8_t>(kProfilePms & 0xFFU) ||
+      role_code == static_cast<uint8_t>(kProfileLockAlarm & 0xFFU)) {
+    return "chan";
+  }
+  return "channel";
+}
+
+void upsertChannelSyncTarget(std::vector<MacAddress>& peers,
+                             std::vector<uint8_t>& role_codes,
+                             const MacAddress& peer,
+                             uint8_t role_code) {
+  for (size_t i = 0; i < peers.size(); ++i) {
+    if (peers[i] == peer) {
+      if (role_codes[i] == 0U && role_code != 0U) {
+        role_codes[i] = role_code;
+      }
+      return;
+    }
+  }
+  peers.push_back(peer);
+  role_codes.push_back(role_code);
+}
+
 uint32_t liveProbeTimeoutMs(size_t paired_count) {
   return (paired_count <= 4U) ? kLiveProbeTimeoutFastMs : kLiveProbeTimeoutNormalMs;
 }
@@ -2772,7 +2803,25 @@ bool ManagementService::startChannelSyncAll(ManagementSource source, uint32_t re
   channel_sync_all_.channel = channel;
   channel_sync_all_.started_ms = now_ms_;
   channel_sync_all_.timeout_ms = 4000U;
-  manager_.getPersistedPeers(channel_sync_all_.peers);
+  std::vector<EspNowManager::PersistedPeerRoleEntry> persisted_peers{};
+  manager_.getPersistedPeersWithRole(persisted_peers);
+  channel_sync_all_.peers.reserve(persisted_peers.size());
+  channel_sync_all_.role_codes.reserve(persisted_peers.size());
+  for (const auto& entry : persisted_peers) {
+    upsertChannelSyncTarget(channel_sync_all_.peers, channel_sync_all_.role_codes, entry.peer, entry.role_code);
+  }
+
+  // Include topology-linked peers (chain roles) to keep topology bindings consistent.
+  EspNowManager::TopologySnapshot snapshot{};
+  if (manager_.getTopologySnapshot(EspNowManager::TopologyState::Committed, snapshot)) {
+    for (const auto& slot : snapshot.slots) {
+      if (!slot.enabled || !isChainRoleCode(slot.peer_role)) {
+        continue;
+      }
+      upsertChannelSyncTarget(channel_sync_all_.peers, channel_sync_all_.role_codes, slot.peer, slot.peer_role);
+    }
+  }
+
   if (channel_sync_all_.peers.empty()) {
     const bool applied = manager_.applyRuntimeChannelToAllPeers(channel);
     stopChannelSyncAll(applied, applied ? ManagementStatus::Ok : ManagementStatus::InternalError);
@@ -2780,11 +2829,15 @@ bool ManagementService::startChannelSyncAll(ManagementSource source, uint32_t re
   }
 
   channel_sync_all_.corr_ids.reserve(channel_sync_all_.peers.size());
+  channel_sync_all_.setting_keys.reserve(channel_sync_all_.peers.size());
   channel_sync_all_.acked.assign(channel_sync_all_.peers.size(), 0U);
   uint32_t corr = req_id + 1U;
   const std::string value = std::to_string(static_cast<unsigned int>(channel));
   for (size_t i = 0; i < channel_sync_all_.peers.size(); ++i) {
-    if (!pull_->requestSettingSet(channel_sync_all_.peers[i], "channel", value, corr)) {
+    const uint8_t role_code = (i < channel_sync_all_.role_codes.size()) ? channel_sync_all_.role_codes[i] : 0U;
+    const char* key = channelSettingKeyForRole(role_code);
+    channel_sync_all_.setting_keys.emplace_back(key);
+    if (!pull_->requestSettingSet(channel_sync_all_.peers[i], key, value, corr)) {
       channel_sync_all_.active = false;
       return false;
     }
@@ -2852,15 +2905,8 @@ bool ManagementService::buildChainLoopTargetPeers(std::vector<MacAddress>& out_p
     return true;
   }
 
-  auto isChainRole = [](uint8_t role_code) -> bool {
-    return role_code == static_cast<uint8_t>(kProfileSens & 0xFFU) ||
-           role_code == static_cast<uint8_t>(kProfileSemu & 0xFFU) ||
-           role_code == static_cast<uint8_t>(kProfileRelay & 0xFFU) ||
-           role_code == static_cast<uint8_t>(kProfileRemu & 0xFFU);
-  };
-
   for (const auto& slot : snapshot.slots) {
-    if (!slot.enabled || !isChainRole(slot.peer_role)) {
+    if (!slot.enabled || !isChainRoleCode(slot.peer_role)) {
       continue;
     }
     if (std::find(out_peers.begin(), out_peers.end(), slot.peer) == out_peers.end()) {

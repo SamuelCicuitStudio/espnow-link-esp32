@@ -1,6 +1,8 @@
 ﻿#include "espnow_link/cli_master.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 
@@ -11,20 +13,6 @@ namespace espnow_link {
 using namespace cli_helpers;
 
 namespace {
-
-const char* storageModeName(StorageBackendMode mode) {
-  switch (mode) {
-    case StorageBackendMode::Disabled:
-      return "disabled";
-    case StorageBackendMode::Sd:
-      return "sd";
-    case StorageBackendMode::Spiffs:
-      return "spiffs";
-    case StorageBackendMode::Unknown:
-    default:
-      return "unknown";
-  }
-}
 
 double bytesToMb(uint32_t bytes) {
   return static_cast<double>(bytes) / (1024.0 * 1024.0);
@@ -122,6 +110,255 @@ bool parseChildScopedTelemetryKey(const std::string& key, uint8_t& out_vid) {
   return true;
 }
 
+std::string lowerAscii(std::string value) {
+  for (char& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return value;
+}
+
+bool parseDescField(const std::string& desc, const char* key, std::string& out_value) {
+  out_value.clear();
+  if (key == nullptr || key[0] == '\0' || desc.empty()) {
+    return false;
+  }
+  const std::string needle = std::string(key) + "=";
+  const size_t start = desc.find(needle);
+  if (start == std::string::npos) {
+    return false;
+  }
+  const size_t value_begin = start + needle.size();
+  const size_t value_end = desc.find(';', value_begin);
+  if (value_end == std::string::npos) {
+    out_value = desc.substr(value_begin);
+  } else {
+    out_value = desc.substr(value_begin, value_end - value_begin);
+  }
+  return true;
+}
+
+bool parseBoolText(const std::string& value, bool& out_bool) {
+  const std::string text = lowerAscii(value);
+  if (text == "1" || text == "true" || text == "yes" || text == "on") {
+    out_bool = true;
+    return true;
+  }
+  if (text == "0" || text == "false" || text == "no" || text == "off") {
+    out_bool = false;
+    return true;
+  }
+  return false;
+}
+
+std::string trimEnumLabels(const std::string& enum_text) {
+  if (enum_text.empty()) {
+    return enum_text;
+  }
+  std::string out{};
+  size_t cursor = 0U;
+  bool first = true;
+  while (cursor < enum_text.size()) {
+    size_t sep = enum_text.find('|', cursor);
+    if (sep == std::string::npos) {
+      sep = enum_text.size();
+    }
+    std::string item = enum_text.substr(cursor, sep - cursor);
+    size_t colon = item.find(':');
+    if (colon != std::string::npos && colon + 1U < item.size()) {
+      item = item.substr(colon + 1U);
+    }
+    if (!item.empty()) {
+      if (!first) {
+        out += "|";
+      }
+      out += item;
+      first = false;
+    }
+    cursor = (sep < enum_text.size()) ? (sep + 1U) : sep;
+  }
+  return out.empty() ? enum_text : out;
+}
+
+std::string mapEnumValue(const std::string& enum_text, const std::string& value) {
+  if (enum_text.empty() || value.empty()) {
+    return value;
+  }
+  size_t cursor = 0U;
+  while (cursor < enum_text.size()) {
+    size_t sep = enum_text.find('|', cursor);
+    if (sep == std::string::npos) {
+      sep = enum_text.size();
+    }
+    const std::string item = enum_text.substr(cursor, sep - cursor);
+    const size_t colon = item.find(':');
+    if (colon != std::string::npos) {
+      const std::string id_text = item.substr(0U, colon);
+      const std::string label = item.substr(colon + 1U);
+      if (id_text == value && !label.empty()) {
+        return label;
+      }
+    }
+    cursor = (sep < enum_text.size()) ? (sep + 1U) : sep;
+  }
+  return value;
+}
+
+std::string renderSettingType(const SettingDescriptor& s) {
+  std::string desc_type{};
+  if (parseDescField(s.description, "type", desc_type) && !desc_type.empty()) {
+    return desc_type;
+  }
+  switch (s.value_type) {
+    case SettingValueType::Int:
+      return "int";
+    case SettingValueType::Float:
+      return "f32";
+    case SettingValueType::Bool:
+      return "bool";
+    case SettingValueType::String:
+    default:
+      return "str";
+  }
+}
+
+std::string renderSettingValue(const SettingDescriptor& s, const std::string& raw_value) {
+  std::string out = raw_value;
+  std::string enum_text{};
+  (void)parseDescField(s.description, "enum", enum_text);
+  if (!enum_text.empty()) {
+    out = mapEnumValue(enum_text, out);
+  }
+  if (s.value_type == SettingValueType::Bool) {
+    bool flag = false;
+    if (parseBoolText(out, flag)) {
+      out = flag ? "true" : "false";
+    }
+  }
+  std::string unit{};
+  if (parseDescField(s.description, "unit", unit) &&
+      !unit.empty() &&
+      (s.value_type == SettingValueType::Float)) {
+    if (!out.empty()) {
+      out += " ";
+      out += unit;
+    }
+  }
+  return out;
+}
+
+std::string renderSettingNotes(const SettingDescriptor& s) {
+  std::string enum_text{};
+  if (parseDescField(s.description, "enum", enum_text) && !enum_text.empty()) {
+    return trimEnumLabels(enum_text);
+  }
+
+  std::string min_text{};
+  std::string max_text{};
+  const bool has_min = parseDescField(s.description, "min", min_text) && !min_text.empty();
+  const bool has_max = parseDescField(s.description, "max", max_text) && !max_text.empty();
+  std::string unit{};
+  const bool has_unit = parseDescField(s.description, "unit", unit) && !unit.empty();
+
+  if (has_min && has_max) {
+    std::string out = min_text + ".." + max_text;
+    std::string type_text = renderSettingType(s);
+    if (type_text == "str") {
+      out = "len " + out;
+    } else if (has_unit) {
+      out += " ";
+      out += unit;
+    }
+    return out;
+  }
+  if (has_unit) {
+    return std::string("unit ") + unit;
+  }
+  return std::string();
+}
+
+enum class SettingsSection : uint8_t {
+  General = 0,
+  UiFeedback,
+  Protection,
+  PushRuntime,
+  Topology,
+  Provisioning,
+  Other,
+};
+
+SettingsSection classifySettingSection(const SettingDescriptor& s) {
+  const std::string key = lowerAscii(s.key);
+  if (key.rfind("lidar.", 0U) == 0U ||
+      (s.setting_id >= 0x0A00U && s.setting_id <= 0x0AFFU)) {
+    return SettingsSection::Provisioning;
+  }
+  if (key.rfind("topo_", 0U) == 0U ||
+      (s.setting_id >= 0x0900U && s.setting_id <= 0x09FFU)) {
+    return SettingsSection::Topology;
+  }
+  if (key.rfind("push_", 0U) == 0U ||
+      (s.setting_id >= 0x0300U && s.setting_id <= 0x03FFU)) {
+    return SettingsSection::PushRuntime;
+  }
+  if (s.setting_id >= 0x0200U && s.setting_id <= 0x02FFU) {
+    return SettingsSection::Protection;
+  }
+  if (key.find("buzzer") != std::string::npos ||
+      key.find("led_") != std::string::npos ||
+      key.rfind("rgb_", 0U) == 0U ||
+      key == "fan_mode" ||
+      key == "chain_48v_enable" ||
+      key == "charger_enable") {
+    return SettingsSection::UiFeedback;
+  }
+  if (s.setting_id <= 0x01FFU) {
+    return SettingsSection::General;
+  }
+  return SettingsSection::Other;
+}
+
+const char* sectionTitle(SettingsSection section) {
+  switch (section) {
+    case SettingsSection::General:
+      return "General";
+    case SettingsSection::UiFeedback:
+      return "UI / Feedback";
+    case SettingsSection::Protection:
+      return "Protection";
+    case SettingsSection::PushRuntime:
+      return "Push / Runtime";
+    case SettingsSection::Topology:
+      return "Topology";
+    case SettingsSection::Provisioning:
+      return "Provisioning";
+    case SettingsSection::Other:
+    default:
+      return "Other";
+  }
+}
+
+std::string fitCell(const std::string& text, size_t width) {
+  if (width == 0U) {
+    return std::string();
+  }
+  if (text.size() <= width) {
+    return text + std::string(width - text.size(), ' ');
+  }
+  if (width <= 3U) {
+    return text.substr(0U, width);
+  }
+  return text.substr(0U, width - 3U) + "...";
+}
+
+std::string tableBorder(const std::vector<size_t>& widths) {
+  std::string out = "+";
+  for (size_t w : widths) {
+    out += std::string(w + 2U, '-');
+    out += "+";
+  }
+  return out;
+}
+
 }  // namespace
 
 void MasterCli::printMandatoryEvents() const {
@@ -198,13 +435,39 @@ const char* MasterCli::descriptorSourceLabel(const DescriptorResponse& d) const 
 }
 
 void MasterCli::printDeviceDescriptorResponse(const DescriptorResponse& d) {
-  io_.writeln("[MASTER][DESC] device");
-  writef("  type  : %s", d.device.device_type.c_str());
-  writef("  id    : %s", d.device.device_id.c_str());
-  writef("  name  : %s", d.device.device_name.c_str());
-  writef("  hw    : %s", d.device.hw_version.c_str());
-  writef("  sw    : %s", d.device.sw_version.c_str());
-  writef("  build : %s", d.device.build_id.c_str());
+  struct DeviceRow {
+    const char* key;
+    std::string value;
+  };
+  const DeviceRow rows[] = {
+      {"Type", d.device.device_type},
+      {"ID", d.device.device_id},
+      {"Name", d.device.device_name},
+      {"HW", d.device.hw_version},
+      {"SW", d.device.sw_version},
+      {"Build", d.device.build_id},
+  };
+
+  size_t key_width = 4U;
+  size_t value_width = 22U;
+  for (const auto& row : rows) {
+    const size_t key_len = std::strlen(row.key);
+    if (key_len > key_width) {
+      key_width = key_len;
+    }
+    if (row.value.size() > value_width) {
+      value_width = row.value.size();
+    }
+  }
+
+  const std::string border =
+      "+" + std::string(key_width + 2U, '-') + "+" + std::string(value_width + 2U, '-') + "+";
+  io_.writeln("[MASTER][DESC] Device");
+  io_.writeln(border);
+  for (const auto& row : rows) {
+    io_.writeln("| " + fitCell(row.key, key_width) + " | " + fitCell(row.value, value_width) + " |");
+  }
+  io_.writeln(border);
 }
 
 void MasterCli::printCapabilitiesDescriptorResponse(const DescriptorResponse& d) {
@@ -220,18 +483,131 @@ void MasterCli::printCapabilitiesDescriptorResponse(const DescriptorResponse& d)
       remote_settings_count_ = static_cast<uint16_t>(std::strtoul(cap.description.c_str(), nullptr, 10));
     }
   }
-  writef("[MASTER][DESC] capabilities (source=%s):", descriptorSourceLabel(d));
+  writef("[MASTER][DESC] Capabilities source=%s snapshot=%lu",
+         descriptorSourceLabel(d),
+         static_cast<unsigned long>(d.snapshot_id));
   if (d.capabilities.empty()) {
     io_.writeln("  (none)");
     return;
   }
+
+  auto normalizeCsv = [](const std::string& text) -> std::string {
+    if (text.find(',') == std::string::npos) {
+      return text;
+    }
+    std::string out{};
+    size_t cursor = 0U;
+    while (cursor < text.size()) {
+      size_t sep = text.find(',', cursor);
+      if (sep == std::string::npos) {
+        sep = text.size();
+      }
+      std::string token = text.substr(cursor, sep - cursor);
+      while (!token.empty() && token.front() == ' ') {
+        token.erase(token.begin());
+      }
+      while (!token.empty() && token.back() == ' ') {
+        token.pop_back();
+      }
+      if (!token.empty()) {
+        if (!out.empty()) {
+          out += ", ";
+        }
+        out += token;
+      }
+      cursor = (sep < text.size()) ? (sep + 1U) : sep;
+    }
+    return out.empty() ? text : out;
+  };
+
+  std::vector<bool> used(d.capabilities.size(), false);
+  auto fetchCapability = [&](std::initializer_list<const char*> keys) -> std::string {
+    for (const char* key : keys) {
+      if (key == nullptr || key[0] == '\0') {
+        continue;
+      }
+      const std::string wanted = lowerAscii(key);
+      for (size_t i = 0; i < d.capabilities.size(); ++i) {
+        if (lowerAscii(d.capabilities[i].key) == wanted) {
+          used[i] = true;
+          return d.capabilities[i].description;
+        }
+      }
+    }
+    return std::string();
+  };
+
+  struct CapabilityRow {
+    std::string key;
+    std::string value;
+  };
+
+  auto addRowIfValue = [](std::vector<CapabilityRow>& rows, const char* key, const std::string& value) {
+    if (key != nullptr && key[0] != '\0' && !value.empty()) {
+      rows.push_back(CapabilityRow{key, value});
+    }
+  };
+
+  std::vector<CapabilityRow> identity{};
+  addRowIfValue(identity, "Profile", fetchCapability({"profile", "pfnm"}));
+  addRowIfValue(identity, "Profile ID", fetchCapability({"profile_id", "pfid"}));
+  addRowIfValue(identity, "Schema Rev", fetchCapability({"schrv"}));
+  addRowIfValue(identity, "Schema Hash", fetchCapability({"schsh"}));
+
+  std::vector<CapabilityRow> counts{};
+  addRowIfValue(counts, "Telemetry Count", fetchCapability({"telemetry_count"}));
+  addRowIfValue(counts, "Settings Count", fetchCapability({"settings_count"}));
+  addRowIfValue(counts, "Events Count", fetchCapability({"events_count"}));
+  addRowIfValue(counts, "Metric ID", fetchCapability({"metid"}));
+  addRowIfValue(counts, "Setting ID", fetchCapability({"setid"}));
+  addRowIfValue(counts, "Event ID", fetchCapability({"evid"}));
+
+  std::vector<CapabilityRow> maps{};
+  addRowIfValue(maps, "Settings Map", normalizeCsv(fetchCapability({"setmap"})));
+  addRowIfValue(maps, "Telemetry Map", normalizeCsv(fetchCapability({"metmap"})));
+  addRowIfValue(maps, "Events Map", normalizeCsv(fetchCapability({"evmap"})));
+  addRowIfValue(maps, "Commands", normalizeCsv(fetchCapability({"cmdset"})));
+
+  std::vector<CapabilityRow> features{};
+  addRowIfValue(features, "Pairing", fetchCapability({"pair"}));
+  addRowIfValue(features, "Unpair", fetchCapability({"unpair"}));
+  addRowIfValue(features, "Slave Desc", fetchCapability({"mslv"}));
+  addRowIfValue(features, "Descriptor", fetchCapability({"desc"}));
+  addRowIfValue(features, "Settings RW", fetchCapability({"setrw"}));
+  addRowIfValue(features, "Telemetry Pull", fetchCapability({"tpull"}));
+  addRowIfValue(features, "Telemetry Push", fetchCapability({"tpush"}));
+  addRowIfValue(features, "Live", fetchCapability({"live"}));
+  addRowIfValue(features, "Time Sync", fetchCapability({"tsync"}));
+  addRowIfValue(features, "OTA", fetchCapability({"ota"}));
+
+  std::vector<CapabilityRow> other{};
   for (size_t i = 0; i < d.capabilities.size(); ++i) {
-    const auto& cap = d.capabilities[i];
-    writef("  %u. %s - %s",
-           static_cast<unsigned int>(i + 1),
-           cap.key.c_str(),
-           cap.description.c_str());
+    if (used[i]) {
+      continue;
+    }
+    other.push_back(CapabilityRow{d.capabilities[i].key, d.capabilities[i].description});
   }
+
+  auto printSection = [&](const char* title, const std::vector<CapabilityRow>& rows) {
+    if (rows.empty()) {
+      return;
+    }
+    constexpr size_t kKeyWidth = 15U;
+    constexpr size_t kValueWidth = 58U;
+    io_.writeln("");
+    io_.writeln(std::string("[") + title + "]");
+    io_.writeln(fitCell("Key", kKeyWidth) + " | Value");
+    io_.writeln(std::string(kKeyWidth, '-') + "+" + std::string(kValueWidth, '-'));
+    for (const auto& row : rows) {
+      io_.writeln(fitCell(row.key, kKeyWidth) + " | " + fitCell(row.value, kValueWidth));
+    }
+  };
+
+  printSection("Identity", identity);
+  printSection("Counts", counts);
+  printSection("Maps", maps);
+  printSection("Features", features);
+  printSection("Other", other);
 }
 
 void MasterCli::printTelemetrySchemaDescriptorResponse(const DescriptorResponse& d) const {
@@ -328,9 +704,15 @@ void MasterCli::printTimeDescriptorResponse(const DescriptorResponse& d) const {
 }
 
 void MasterCli::printSettingsDescriptorResponse(const DescriptorResponse& d) {
-  writef("[MASTER][DESC] settings (source=%s):", descriptorSourceLabel(d));
+  const unsigned int total_settings =
+      (d.total_count != 0U) ? static_cast<unsigned int>(d.total_count)
+                            : static_cast<unsigned int>(d.settings.size());
+  writef("[MASTER][SET] Settings snapshot=%lu source=%s total=%u",
+         static_cast<unsigned long>(d.snapshot_id),
+         descriptorSourceLabel(d),
+         total_settings);
   if (d.message == "truncated") {
-    writef("[MASTER][DESC] note: truncated by payload limit (received=%u, expected=%u). use settings.full",
+    writef("[MASTER][SET] note: truncated by payload limit (received=%u, expected=%u). use settings.full",
            static_cast<unsigned int>(d.settings.size()),
            static_cast<unsigned int>(remote_settings_count_));
   }
@@ -338,26 +720,116 @@ void MasterCli::printSettingsDescriptorResponse(const DescriptorResponse& d) {
     io_.writeln("  (none)");
     return;
   }
-  for (size_t i = 0; i < d.settings.size(); ++i) {
-    const auto& s = d.settings[i];
-    const char* type = "string";
-    if (s.value_type == SettingValueType::Int) {
-      type = "int";
-    } else if (s.value_type == SettingValueType::Float) {
-      type = "float";
-    } else if (s.value_type == SettingValueType::Bool) {
-      type = "bool";
+
+  struct DisplayRow {
+    std::string id;
+    std::string key;
+    std::string value;
+    std::string default_value;
+    std::string type;
+    std::string rw;
+    std::string notes;
+  };
+
+  const char* headers[7] = {"ID", "Key", "Value", "Default", "Type", "RW", "Range / Notes"};
+  const size_t max_widths[7] = {6U, 22U, 20U, 20U, 6U, 2U, 32U};
+  const SettingsSection order[] = {
+      SettingsSection::General,
+      SettingsSection::UiFeedback,
+      SettingsSection::Protection,
+      SettingsSection::PushRuntime,
+      SettingsSection::Topology,
+      SettingsSection::Provisioning,
+      SettingsSection::Other,
+  };
+
+  auto printTable = [&](const char* title, const std::vector<DisplayRow>& rows) {
+    io_.writeln("");
+    writef("[%s]", title);
+
+    std::vector<size_t> widths = {2U, 3U, 5U, 7U, 4U, 2U, 13U};
+    for (size_t i = 0; i < 7U; ++i) {
+      const size_t header_len = std::strlen(headers[i]);
+      if (header_len > widths[i]) {
+        widths[i] = header_len;
+      }
     }
-    writef("  %u. id=0x%04X %s (%s, rw=%s) current=%s default=%s",
-           static_cast<unsigned int>(i + 1),
-           static_cast<unsigned int>(s.setting_id),
-           s.key.c_str(),
-           type,
-           s.writable ? "yes" : "no",
-           s.current_value.c_str(),
-           s.default_value.c_str());
-    if (!s.description.empty()) {
-      writef("     %s", s.description.c_str());
+    for (const auto& row : rows) {
+      const std::string cells[7] = {
+          row.id, row.key, row.value, row.default_value, row.type, row.rw, row.notes};
+      for (size_t i = 0; i < 7U; ++i) {
+        size_t candidate = cells[i].size();
+        if (candidate > max_widths[i]) {
+          candidate = max_widths[i];
+        }
+        if (candidate > widths[i]) {
+          widths[i] = candidate;
+        }
+      }
+    }
+
+    const std::string border = tableBorder(widths);
+    io_.writeln(border);
+
+    auto emitRow = [&](const std::string (&cells)[7]) {
+      std::string line = "|";
+      for (size_t i = 0; i < 7U; ++i) {
+        line += " ";
+        line += fitCell(cells[i], widths[i]);
+        line += " |";
+      }
+      io_.writeln(line);
+    };
+
+    const std::string header_cells[7] = {headers[0],
+                                         headers[1],
+                                         headers[2],
+                                         headers[3],
+                                         headers[4],
+                                         headers[5],
+                                         headers[6]};
+    emitRow(header_cells);
+    io_.writeln(border);
+
+    for (const auto& row : rows) {
+      const std::string cells[7] = {row.id,
+                                    row.key,
+                                    row.value,
+                                    row.default_value,
+                                    row.type,
+                                    row.rw,
+                                    row.notes};
+      emitRow(cells);
+    }
+    io_.writeln(border);
+  };
+
+  for (SettingsSection section : order) {
+    std::vector<DisplayRow> rows{};
+    rows.reserve(d.settings.size());
+    for (const auto& s : d.settings) {
+      if (classifySettingSection(s) != section) {
+        continue;
+      }
+      char id_buf[16] = {0};
+      std::snprintf(id_buf, sizeof(id_buf), "0x%04X", static_cast<unsigned int>(s.setting_id));
+      std::string type = renderSettingType(s);
+      std::string enum_text{};
+      if (parseDescField(s.description, "enum", enum_text) && !enum_text.empty() && type != "bool") {
+        type = "enum";
+      }
+      rows.push_back(DisplayRow{
+          id_buf,
+          s.key,
+          renderSettingValue(s, s.current_value),
+          renderSettingValue(s, s.default_value),
+          type,
+          s.writable ? "Y" : "N",
+          renderSettingNotes(s),
+      });
+    }
+    if (!rows.empty()) {
+      printTable(sectionTitle(section), rows);
     }
   }
 }
@@ -424,26 +896,61 @@ void MasterCli::printStorageInfoDescriptorResponse(const DescriptorResponse& d) 
     return note.substr(value_begin, value_end - value_begin);
   };
 
-  const char* state = (!d.storage_info.available) ? "unavailable" : (d.storage_info.mounted ? "ready" : "not-mounted");
-  writef("[MASTER][STORAGE] %s %s | used %.2f/%.2f MB (%.2f%%) | free %.2f MB",
-         storageModeName(d.storage_info.mode),
-         state,
-         used_mb,
-         total_mb,
-         used_pct,
-         free_mb);
-  writef("[MASTER][STORAGE] path root=%s cwd=%s", d.storage_info.root_path.c_str(), d.storage_info.cwd.c_str());
-  if (!d.message.empty()) {
-    const std::string card_type = extractNoteField(d.message, "card_type");
-    const std::string card_mb = extractNoteField(d.message, "card_mb");
-    if (!card_type.empty() || !card_mb.empty()) {
-      writef("[MASTER][STORAGE] card type=%s size=%sMB",
-             card_type.empty() ? "unknown" : card_type.c_str(),
-             card_mb.empty() ? "?" : card_mb.c_str());
-    } else {
-      writef("[MASTER][STORAGE] note=%s", d.message.c_str());
+  auto toUpperAscii = [](std::string value) -> std::string {
+    for (char& c : value) {
+      c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
+    return value;
+  };
+
+  const char* backend = "UNKNOWN";
+  switch (d.storage_info.mode) {
+    case StorageBackendMode::Sd:
+      backend = "SD CARD";
+      break;
+    case StorageBackendMode::Spiffs:
+      backend = "SPIFFS";
+      break;
+    case StorageBackendMode::Disabled:
+      backend = "DISABLED";
+      break;
+    case StorageBackendMode::Unknown:
+    default:
+      backend = "UNKNOWN";
+      break;
   }
+  const char* state = "UNAVAILABLE";
+  if (d.storage_info.available) {
+    state = d.storage_info.mounted ? "READY" : "NOT-MOUNTED";
+  }
+  std::string card_type = toUpperAscii(extractNoteField(d.message, "card_type"));
+  if (card_type.empty()) {
+    card_type = "UNKNOWN";
+  }
+  const std::string root = d.storage_info.root_path.empty() ? "/" : d.storage_info.root_path;
+  const std::string cwd = d.storage_info.cwd.empty() ? "/" : d.storage_info.cwd;
+
+  writef("[MASTER][STORAGE] %s | %s | %s | ROOT:%s | CWD:%s",
+         backend,
+         state,
+         card_type.c_str(),
+         root.c_str(),
+         cwd.c_str());
+  writef("[MASTER][STORAGE] FREE: %.2f MB | USED: %.2f/%.2f MB",
+         free_mb,
+         used_mb,
+         total_mb);
+
+  constexpr size_t kBarWidth = 20U;
+  size_t used_slots = static_cast<size_t>((used_pct * static_cast<double>(kBarWidth) / 100.0) + 0.5);
+  if (used_pct > 0.0 && used_slots == 0U) {
+    used_slots = 1U;
+  }
+  if (used_slots > kBarWidth) {
+    used_slots = kBarWidth;
+  }
+  const std::string bar = std::string(used_slots, '#') + std::string(kBarWidth - used_slots, '-');
+  writef("[MASTER][STORAGE] USAGE [%s] %.2f%%", bar.c_str(), used_pct);
 }
 
 void MasterCli::printStorageListDescriptorResponse(const DescriptorResponse& d) const {

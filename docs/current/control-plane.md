@@ -10,6 +10,8 @@ Shared envelopes:
 
 Shared command IDs are defined in `ManagementCommandId` and used by CLI and frontend APIs without translation.
 
+CLI log/render text formatting (`[MASTER][DESC]`, `[MASTER][SET]`, `[MASTER][STORAGE]`, etc.) is presentation-only and not part of the wire contract.
+
 ## Source and Access Model
 
 Source identity (`ManagementSource`):
@@ -109,3 +111,4 @@ Queue admission counters expose enqueued/rejected/dropped-oldest counts per queu
 ## Related
 
 - `../optimization/cli-api-control-optimization-structure.md` (coexistence and optimization structure)
+- `cli.md` (current CLI render/output contract examples)

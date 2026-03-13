@@ -57,6 +57,74 @@ When CLI and frontend API are both active:
 - `IMasterCliActions`
 - `IMasterOtaFrontendHook`
 
+## Render Output Contract (Current)
+
+CLI text output is now normalized for operator readability.
+This is a presentation contract only; command IDs, payloads, and management statuses are unchanged.
+
+### Device Descriptor
+
+`desc` prints a fixed 2-column table:
+
+```text
+[MASTER][DESC] Device
++-------+----------------------+
+| Type  | PMS                  |
+| ID    | 8C:BF:EA:84:E7:20    |
+| Name  | PMS-Node             |
+| HW    | PMS-HW1              |
+| SW    | 3.1.1                |
+| Build | pms1-311-260313082004|
++-------+----------------------+
+```
+
+### Capabilities Descriptor
+
+`caps` prints one header plus grouped sections:
+
+```text
+[MASTER][DESC] Capabilities source=provider snapshot=1476763498
+
+[Identity]
+Key             | Value
+---------------+----------------------------------------------------------
+Profile         | PMS
+Profile ID      | 1
+Schema Rev      | 1
+Schema Hash     | pms001
+```
+
+Additional sections are emitted in this order when values exist:
+
+- `[Counts]`
+- `[Maps]`
+- `[Features]`
+- `[Other]` (only for unmapped capability keys)
+
+### Settings Descriptor
+
+`settings`/`settings.raw` print as sectioned tables under a normalized header:
+
+```text
+[MASTER][SET] Settings snapshot=<id> source=<source> total=<n>
+```
+
+Sections are grouped by setting domain (for example `General`, `UI / Feedback`, `Protection`, `Topology`, ...).
+
+### Storage Info
+
+`sd.info` prints compact 3-line summary:
+
+```text
+[MASTER][STORAGE] SD CARD | READY | SDSC | ROOT:/ | CWD:/
+[MASTER][STORAGE] FREE: 232.50 MB | USED: 5.38/237.88 MB
+[MASTER][STORAGE] USAGE [#-------------------] 2.26%
+```
+
+### Frontend Note
+
+Frontend/API integrations must consume typed management/descriptor data and should not parse CLI text.
+
 ## Code Anchors
 
 - `include/espnow_link/cli_master.hpp`

@@ -1521,6 +1521,17 @@ bool EspNowManager::applyRuntimeChannelToAllPeers(uint8_t channel) {
 
   std::vector<MacAddress> peers{};
   getPersistedPeers(peers);
+  TopologySnapshot committed{};
+  if (getTopologySnapshot(TopologyState::Committed, committed)) {
+    for (const auto& slot : committed.slots) {
+      if (!slot.enabled) {
+        continue;
+      }
+      if (std::find(peers.begin(), peers.end(), slot.peer) == peers.end()) {
+        peers.push_back(slot.peer);
+      }
+    }
+  }
   bool ok = true;
   for (const auto& peer : peers) {
     ok = store_->saveChannel(local_mac_, peer, channel) && ok;

@@ -25,6 +25,26 @@ Paged management commands:
 
 Paging is deterministic and uses cursor + page size.
 
+## CLI Render (Settings)
+
+Current CLI rendering for settings uses normalized header and sectioned tables:
+
+```text
+[MASTER][SET] Settings snapshot=<id> source=<source> total=<n>
+```
+
+Each section prints table columns:
+
+- `ID`
+- `Key`
+- `Value`
+- `Default`
+- `Type`
+- `RW`
+- `Range / Notes`
+
+This is render-only formatting. Underlying descriptor payload fields are unchanged.
+
 ## Setting Operations
 
 Supported setting commands:
