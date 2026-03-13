@@ -800,14 +800,15 @@ bool RemuAppDescriptorProvider::finalizeSettingChange_(const std::string& key,
   if (cfg_.apply_setting != nullptr) {
     std::string apply_message{};
     const bool applied = cfg_.apply_setting(cfg_.runtime_user, key, value, apply_message);
-    if (!apply_message.empty()) {
-      out_message = apply_message;
-    }
     if (!applied) {
+      out_message = apply_message.empty() ? (key + " apply failed (persisted)") : apply_message;
       if (cfg_.setting_feedback != nullptr) {
         cfg_.setting_feedback(cfg_.runtime_user, key, value, false);
       }
       return false;
+    }
+    if (!apply_message.empty()) {
+      out_message = apply_message;
     }
   }
 

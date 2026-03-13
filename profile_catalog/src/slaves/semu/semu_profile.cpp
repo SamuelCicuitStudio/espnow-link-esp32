@@ -989,7 +989,7 @@ bool SemuAppDescriptorProvider::finalizeSettingChange_(const std::string& key,
     std::string apply_message;
     const bool apply_ok = cfg_.apply_setting(cfg_.runtime_user, key, value, apply_message);
     if (!apply_ok) {
-      out_message = apply_message.empty() ? (key + " apply failed") : apply_message;
+      out_message = apply_message.empty() ? (key + " apply failed (persisted)") : apply_message;
       if (cfg_.setting_feedback != nullptr) {
         cfg_.setting_feedback(cfg_.runtime_user, key, value, false);
       }

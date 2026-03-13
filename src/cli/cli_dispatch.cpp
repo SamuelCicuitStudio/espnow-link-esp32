@@ -1550,7 +1550,7 @@ bool MasterCli::handleSetIdCommand(const std::string& line, const std::string& l
   }
 
   const std::string sid = trim(body.substr(0, eq));
-  const std::string value = body.substr(eq + 1);
+  const std::string value = trim(body.substr(eq + 1));
   const unsigned long id = std::strtoul(sid.c_str(), nullptr, 0);
   if (id == 0 || id > 0xFFFFUL) {
     io_.writeln("[MASTER][CLI] invalid setting_id");
@@ -1625,7 +1625,7 @@ bool MasterCli::handleSetCommand(const std::string& line, const std::string& low
 
   const size_t eq = body.find('=');
   const std::string key = trim(body.substr(0U, eq));
-  const std::string value = body.substr(eq + 1U);
+  const std::string value = trim(body.substr(eq + 1U));
   if (management_transport_ == nullptr) {
     io_.writeln("[MASTER][CLI] management path unavailable");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::DeniedByPolicy, "availability");
@@ -6412,7 +6412,7 @@ bool MasterCli::executeDescriptorQueryNow(const std::string& cmd, const MacAddre
       return false;
     }
     const std::string key = body.substr(0, eq);
-    const std::string value = body.substr(eq + 1);
+    const std::string value = trim(body.substr(eq + 1));
     sent = sendMgmtRaw(ManagementCommandId::SettingSet,
                        management_utils::buildSettingSetByKeyPayload(key, value));
   } else if (cmd == "LOGGER.STATUS") {

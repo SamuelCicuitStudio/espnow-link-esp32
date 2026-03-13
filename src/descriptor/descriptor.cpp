@@ -6,6 +6,7 @@
 #include "descriptor_cache.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace espnow_link {
@@ -954,10 +955,14 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
                        ? DescriptorResponseType::Ack
                        : DescriptorResponseType::Error;
         if (out.type == DescriptorResponseType::Ack && out.message.empty()) {
-          out.message = "setting updated";
+          char idbuf[24]{};
+          std::snprintf(idbuf, sizeof(idbuf), "setting[0x%04X] updated", static_cast<unsigned>(query.setting_id));
+          out.message = idbuf;
         }
         if (out.type == DescriptorResponseType::Error && out.message.empty()) {
-          out.message = "setting write unavailable";
+          char idbuf[34]{};
+          std::snprintf(idbuf, sizeof(idbuf), "setting[0x%04X] write unavailable", static_cast<unsigned>(query.setting_id));
+          out.message = idbuf;
         }
         return true;
       }
@@ -970,12 +975,12 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
 
       out.type = provider.setSetting(query.key, query.value, out.message) ? DescriptorResponseType::Ack : DescriptorResponseType::Error;
       if (out.type == DescriptorResponseType::Ack && out.message.empty()) {
-        out.message = "setting updated";
+        out.message = query.key.empty() ? "setting updated" : (query.key + " updated");
       }
-      if (out.type == DescriptorResponseType::Error && profile != nullptr) {
+      if (out.type == DescriptorResponseType::Error && out.message.empty() && profile != nullptr) {
         const ProfileSettingSpec* spec = findProfileSettingByKey(profile, query.key);
         if (spec != nullptr) {
-          out.message = "setting write unavailable";
+          out.message = query.key.empty() ? "setting write unavailable" : (query.key + " write unavailable");
         }
       }
       return true;

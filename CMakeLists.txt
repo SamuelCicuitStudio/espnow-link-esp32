@@ -1,5 +1,12 @@
 ﻿cmake_minimum_required(VERSION 3.16)
 
+# In this project, PlatformIO already builds this library from library.json.
+# Returning early here avoids duplicate object definitions at link time
+# when the same sources are also registered as an ESP-IDF component.
+if(EXISTS "${CMAKE_SOURCE_DIR}/platformio.ini")
+  return()
+endif()
+
 idf_component_register(
   SRCS
     "src/core/address.cpp"
