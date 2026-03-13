@@ -1,0 +1,40 @@
+{
+    "name":  "espnow-link-esp32",
+    "version":  "0.1.0",
+    "description":  "ESP32 secure ESP-NOW pairing, control, telemetry and firmware streaming library",
+    "keywords":  [
+                     "esp32",
+                     "esp-now",
+                     "pairing",
+                     "security"
+                 ],
+    "repository":  {
+                       "type":  "git",
+                       "url":  "https://github.com/SamuelCicuitStudio/espnow-link-esp32.git"
+                   },
+    "authors":  [
+                    {
+                        "name":  "EasyDriveway",
+                        "maintainer":  true
+                    }
+                ],
+    "license":  "MIT",
+    "frameworks":  [
+                       "arduino",
+                       "espidf"
+                   ],
+    "platforms":  [
+                      "espressif32"
+                  ],
+    "build":  {
+                  "flags":  [
+                                "-std=gnu++17",
+                                "-Iprofile_catalog/include"
+                            ],
+                  "srcDir":  ".",
+                  "srcFilter":  [
+                                    "+<src/>",
+                                    "+<profile_catalog/src/>"
+                                ]
+              }
+}

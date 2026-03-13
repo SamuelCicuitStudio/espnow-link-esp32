@@ -1,0 +1,10 @@
+.pio/
+.vscode/
+build/
+out/
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe

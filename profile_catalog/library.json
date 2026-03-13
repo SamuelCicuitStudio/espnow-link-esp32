@@ -1,0 +1,31 @@
+{
+  "name": "espnow-link-profile-catalog",
+  "version": "0.1.0",
+  "description": "App-owned profile catalog for espnow-link",
+  "keywords": [
+    "espnow",
+    "profile",
+    "schema"
+  ],
+  "authors": [
+    {
+      "name": "EasyDriveway",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": [
+      "-std=gnu++17"
+    ]
+  }
+}

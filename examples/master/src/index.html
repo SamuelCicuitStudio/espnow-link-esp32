@@ -1,0 +1,389 @@
+<!doctype html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Master Management Test UI</title>
+<style>
+body{font-family:ui-sans-serif,system-ui;margin:12px;background:#f5f7fb;color:#1e293b}
+h2{margin:0 0 6px 0}h3{margin:8px 0 6px 0}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:10px;padding:10px;margin-bottom:10px}
+button,input{padding:6px 8px;margin:3px;border-radius:8px;border:1px solid #c8d0da}
+button{background:#0b67d0;color:#fff;border:0;cursor:pointer}
+button.alt{background:#64748b}
+button.good{background:#0b8f63}
+button.warn{background:#b26a00}
+button.danger{background:#b42318}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid #e7edf4;padding:6px;text-align:left}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.help{font-size:12px;color:#475569}
+.cmd{display:inline-flex;align-items:center;gap:4px}
+.small{font-size:12px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 520px;gap:12px;align-items:start}
+.leftPane{min-width:0}
+.rightPane{min-width:0}
+.sticky{position:sticky;top:10px}
+#respMeta{margin-bottom:8px;padding:8px;border-radius:8px;background:#eef2f7;color:#334155}
+#respMeta.err{background:#fdecea;color:#9f1239}
+pre{background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;white-space:pre-wrap;max-height:72vh;overflow:auto}
+@media (max-width: 1200px){.layout{grid-template-columns:1fr}.sticky{position:static}}
+</style></head><body>
+<h2>Master Management Test UI</h2>
+<div class="help">Goal: test most CLI-equivalent management commands from browser. Select target MAC first for slave commands.</div>
+<div class="layout"><div class="leftPane">
+
+<div class="card">
+  <h3>Live State</h3>
+  <div class="row">
+    <button onclick="refreshState()">Refresh State</button>
+    <button class="alt" onclick="refreshEvents()">Refresh Events</button>
+    <span id="stateLine" class="small"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Discovery And Pairing</h3>
+  <div class="row">
+    <input id="discWindow" value="12000" title="Discovery window ms">
+    <button onclick="runUrl('/api/discovery/start?window_ms='+enc('discWindow')+'&timeout_ms='+enc('timeoutMs'))">Discovery Start</button>
+    <button class="alt" onclick="runUrl('/api/discovery/stop?timeout_ms='+enc('timeoutMs'))">Discovery Stop</button>
+    <button onclick="refreshDiscovery()">Discovery Snapshot</button>
+    <button onclick="refreshPaired()">Paired Snapshot</button>
+  </div>
+  <div class="row">
+    <input id="targetMac" placeholder="Target MAC AA:BB:CC:DD:EE:FF">
+    <button class="good" onclick="runUrl('/api/pair?peer='+enc('targetMac')+'&timeout_ms='+enc('timeoutMs'))">Pair Target</button>
+    <button class="warn" onclick="runUrl('/api/unpair?peer='+enc('targetMac')+'&timeout_ms='+enc('timeoutMs'))">Unpair Target</button>
+  </div>
+  <div class="row">
+    <div style="flex:1;min-width:280px">
+      <div class="small">Discovered (with role if provided by discovery payload)</div>
+      <table><thead><tr><th>MAC</th><th>Role</th><th>Name</th><th>RSSI</th><th>Use</th></tr></thead><tbody id="discRows"></tbody></table>
+    </div>
+    <div style="flex:1;min-width:280px">
+      <div class="small">Paired</div>
+      <table><thead><tr><th>MAC</th><th>Role</th><th>Use</th></tr></thead><tbody id="pairRows"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Command Parameters</h3>
+  <div class="row">
+    <label class="small">timeout_ms <input id="timeoutMs" value="5000"></label>
+    <label class="small">wait_terminal <input id="waitTerminal" value="1"></label>
+    <label class="small">setting key <input id="settingKey" placeholder="example: fan_mode"></label>
+    <label class="small">setting value <input id="settingVal" placeholder="example: 1"></label>
+    <label class="small">channel <input id="channelVal" value="6"></label>
+    <label class="small">path <input id="pathVal" value="/"></label>
+    <label class="small">epoch_s <input id="epochVal" placeholder="UNIX seconds"></label>
+    <label class="small">ota_path <input id="otaPath" value="/sd/fw.bin"></label>
+    <label class="small">ota_target <input id="otaTarget" value="running"></label>
+    <label class="small">ota_chunk <input id="otaChunk" value="220"></label>
+    <label class="small">ota_role <input id="otaRole" value="s"></label>
+    <label class="small">ota_id <input id="otaId" placeholder="archive id"></label>
+    <label class="small">trig_idx <input id="trigIdx" value="1"></label>
+    <label class="small">trig_dir(1/2) <input id="trigDir" value="1"></label>
+    <label class="small">trig_delay_ms <input id="trigDelay" value="40"></label>
+    <label class="small">trig_hold_ms <input id="trigHold" value="120"></label>
+    <label class="small">trig_src_vi <input id="trigSrcVi" value="255"></label>
+  </div>
+  <div class="help">Each button runs <code>/api/command?name=...</code>. Output includes command name, req/op IDs, terminal state, payload hex/text.</div>
+</div>
+
+<div class="card">
+  <h3>Core Slave Commands</h3>
+  <div class="row">
+    <span class="cmd"><button onclick="runCmd('desc_get','Read target descriptor/profile')">DescGet</button></span>
+    <span class="cmd"><button onclick="runCmd('caps_get','Read target capabilities')">CapsGet</button></span>
+    <span class="cmd"><button onclick="runCmd('settings_get','Read full settings list')">SettingsGet</button></span>
+    <span class="cmd"><button onclick="runCmd('telem_pull','Pull telemetry once')">TelemPull</button></span>
+    <span class="cmd"><button onclick="runCmd('live_get','Read liveness status')">LiveGet</button></span>
+    <span class="cmd"><button onclick="runCmd('time_get','Read target time')">TimeGet</button></span>
+    <span class="cmd"><button onclick="runCmd('ping_get','Round-trip ping')">PingGet</button></span>
+    <span class="cmd"><button class="warn" onclick="runCmd('audio_ping','Trigger audio ping on target')">AudioPing</button></span>
+  </div>
+  <div class="row">
+    <button onclick="runCmd('setting_get','Read one setting key')">SettingGet(key)</button>
+    <button class="good" onclick="runCmd('setting_set','Write one setting key')">SettingSet(key,value)</button>
+    <button class="warn" onclick="runCmd('restart_slave','Restart selected slave')">RestartSlave</button>
+    <button class="danger" onclick="runCmd('reset_slave','Factory reset selected slave')">ResetSlave</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Master Runtime Controls</h3>
+  <div class="row">
+    <button onclick="runCmd('cli_status','Read local CLI enable state')">CliStatus</button>
+    <button class="good" onclick="runCmd('cli_enable','Enable local CLI')">CliEnable</button>
+    <button class="warn" onclick="runCmd('cli_disable','Disable local CLI')">CliDisable</button>
+    <button onclick="runCmd('chainloop_status','Read chain loop status')">ChainLoopStatus</button>
+    <button class="good" onclick="runCmd('chainloop_enable','Enable chain auto-loop on supported slaves')">ChainLoopEnable</button>
+    <button class="warn" onclick="runCmd('chainloop_disable','Disable chain auto-loop')">ChainLoopDisable</button>
+    <button onclick="runCmd('channel_runtime_get','Read runtime channel table')">ChannelRuntimeGet</button>
+    <button class="warn" onclick="runCmd('channel_sync_all','Sync all paired slaves to channel value')">ChannelSyncAll</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Push, Logs, Storage, Metrics</h3>
+  <div class="row">
+    <button onclick="runCmd('push_get','Read telemetry push status')">PushGet</button>
+    <button class="good" onclick="runCmd('push_start','Start push stream')">PushStart</button>
+    <button onclick="runCmd('push_update','Update push stream')">PushUpdate</button>
+    <button class="warn" onclick="runCmd('push_pause','Pause push stream')">PushPause</button>
+    <button class="good" onclick="runCmd('push_resume','Resume push stream')">PushResume</button>
+    <button class="warn" onclick="runCmd('push_stop','Stop push stream')">PushStop</button>
+  </div>
+  <div class="row">
+    <button onclick="runCmd('log_local_status','Read local log status')">LogLocalStatus</button>
+    <button class="good" onclick="runCmd('log_local_enable','Enable local logs')">LogLocalEnable</button>
+    <button class="warn" onclick="runCmd('log_local_disable','Disable local logs')">LogLocalDisable</button>
+    <button class="danger" onclick="runCmd('log_local_clear','Clear local logs')">LogLocalClear</button>
+    <button onclick="runCmd('log_remote_status','Read remote log status (target)')">LogRemoteStatus</button>
+  </div>
+  <div class="row">
+    <button onclick="runCmd('storage_info','Storage info')">StorageInfo</button>
+    <button onclick="runCmd('storage_list','Storage list path')">StorageList</button>
+    <button onclick="runCmd('storage_stat','Storage stat path')">StorageStat</button>
+    <button class="danger" onclick="runCmd('storage_format','Format storage')">StorageFormat</button>
+    <button onclick="runCmd('metrics_get','Read metrics counters')">MetricsGet</button>
+    <button class="warn" onclick="runCmd('metrics_reset','Reset metrics counters')">MetricsReset</button>
+    <button onclick="runCmd('queue_get','Read queue depth from service')">QueueGet</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>OTA Commands</h3>
+  <div class="help">Use <code>ota_path</code> for local file path, <code>ota_target</code> for apply target, <code>ota_role</code>/<code>ota_id</code> for archive commands.</div>
+  <div class="row">
+    <button onclick="runCmd('ota_status','Read OTA status')">OtaStatus</button>
+    <button onclick="runCmd('ota_manifest','Read OTA manifest')">OtaManifest</button>
+    <button onclick="runCmd('ota_manifest_rebuild','Rebuild OTA manifest')">OtaManifestRebuild</button>
+    <button onclick="runCmd('ota_capacity','Read OTA capacity')">OtaCapacity</button>
+    <button onclick="runCmd('ota_gate','Read OTA gate')">OtaGate</button>
+  </div>
+  <div class="row">
+    <button class="good" onclick="runCmd('ota_push_start','Start OTA push from ota_path')">OtaPushStart</button>
+    <button onclick="runCmd('ota_push_status','Read OTA push status')">OtaPushStatus</button>
+    <button class="warn" onclick="runCmd('ota_push_abort','Abort OTA push')">OtaPushAbort</button>
+    <button class="good" onclick="runCmd('ota_update_start','Start OTA update to selected target from ota_path')">OtaUpdateStart</button>
+    <button class="warn" onclick="runCmd('ota_master_update_start','Start OTA update on master from ota_path')">OtaMasterUpdateStart</button>
+  </div>
+  <div class="row">
+    <button class="good" onclick="runCmd('ota_apply','Apply OTA target')">OtaApply</button>
+    <button class="warn" onclick="runCmd('ota_rollback','Rollback OTA')">OtaRollback</button>
+    <button class="warn" onclick="runCmd('ota_clear_scope','Clear OTA scope path/value')">OtaClearScope</button>
+  </div>
+  <div class="row">
+    <button onclick="runCmd('ota_archive_list','List OTA archive entries')">OtaArchiveList</button>
+    <button onclick="runCmd('ota_archive_save_running','Save running image to archive')">OtaArchiveSaveRunning</button>
+    <button onclick="runCmd('ota_archive_save_staged','Save staged image to archive')">OtaArchiveSaveStaged</button>
+    <button onclick="runCmd('ota_archive_restore','Restore archive id')">OtaArchiveRestore</button>
+    <button onclick="runCmd('ota_archive_verify','Verify archive id')">OtaArchiveVerify</button>
+    <button class="warn" onclick="runCmd('ota_archive_delete','Delete archive id')">OtaArchiveDelete</button>
+    <button class="danger" onclick="runCmd('ota_archive_clear','Clear archive role')">OtaArchiveClear</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Topology Commands</h3>
+  <div class="help">Use trigger fields for <code>TopologyTriggerSend</code>.</div>
+  <div class="row">
+    <button onclick="runCmd('topology_status','Read topology staged/committed status')">TopologyStatus</button>
+    <button onclick="runCmd('topology_slots_committed','Read committed topology slots')">TopologySlots(committed)</button>
+    <button onclick="runCmd('topology_slots_staged','Read staged topology slots')">TopologySlots(staged)</button>
+    <button class="warn" onclick="runCmd('topology_commit','Commit staged topology')">TopologyCommit</button>
+    <button class="good" onclick="runCmd('topology_trigger_send','Send topology trigger with trigger params')">TopologyTriggerSend</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Events And Operation Tracking</h3>
+  <div class="row">
+    <input id="opId" placeholder="operation id">
+    <button onclick="runUrl('/api/op/status?op_id='+enc('opId'))">OpStatus</button>
+    <button onclick="runUrl('/api/op/wait?op_id='+enc('opId')+'&timeout_ms='+enc('timeoutMs'))">OpWait</button>
+    <input id="evtSince" value="0">
+    <input id="evtLimit" value="60">
+    <button onclick="refreshEvents()">Events</button>
+  </div>
+</div>
+
+  </div>
+  <div class="rightPane">
+    <div class="card sticky">
+      <h3>Response Panel</h3>
+      <div id="respMeta" class="small">No command sent yet.</div>
+      <div class="row">
+        <button class="alt" onclick="clearOut()">Clear Response</button>
+        <button class="alt" onclick="copyOut()">Copy Response</button>
+      </div>
+      <pre id="out">ready</pre>
+    </div>
+  </div>
+</div>
+
+<script>
+function q(id){return document.getElementById(id);}
+function enc(id){return encodeURIComponent((q(id).value||'').trim());}
+function setTarget(mac){q('targetMac').value=mac||'';}
+
+function stamp(){
+  var d=new Date();
+  return d.toLocaleTimeString();
+}
+
+function setMeta(text,isErr){
+  var m=q('respMeta');
+  if(!m){return;}
+  m.textContent='['+stamp()+'] '+text;
+  m.className='small'+(isErr?' err':'');
+}
+
+async function fetchJson(url){
+  try{
+    const r=await fetch(url,{method:'GET'});
+    const t=await r.text();
+    let out=null;
+    try{
+      out=JSON.parse(t);
+    }catch(e){
+      out={ok:false,parse_error:true,raw:t};
+    }
+    out.http_status=r.status;
+    out.http_ok=r.ok;
+    out.request_url=url;
+    return out;
+  }catch(e){
+    return {ok:false,error:'fetch_failed',message:String(e),request_url:url};
+  }
+}
+function show(obj){
+  q('out').textContent=JSON.stringify(obj,null,2);
+  if(obj&&obj.op_id){q('opId').value=obj.op_id;}
+}
+
+async function safeRun(label,url){
+  setMeta('Sending '+label+' ...',false);
+  const out=await fetchJson(url);
+  show(out);
+  const ok=(out&&out.ok===true) || (out&&out.http_ok===true&&out.ok!==false);
+  setMeta(label+(ok?' completed':' failed'),!ok);
+  return out;
+}
+
+async function runUrl(url){await safeRun(url,url);}
+
+async function runCmd(name,info){
+  const p=new URLSearchParams();
+  p.set('name',name);
+  p.set('target',q('targetMac').value||'');
+  p.set('timeout_ms',q('timeoutMs').value||'5000');
+  p.set('wait',q('waitTerminal').value||'1');
+  p.set('key',q('settingKey').value||'');
+  p.set('value',q('settingVal').value||'');
+  p.set('channel',q('channelVal').value||'');
+  p.set('path',q('pathVal').value||'/');
+  p.set('epoch_s',q('epochVal').value||'');
+  p.set('ota_path',q('otaPath').value||'');
+  p.set('ota_target',q('otaTarget').value||'');
+  p.set('ota_chunk',q('otaChunk').value||'');
+  p.set('ota_role',q('otaRole').value||'');
+  p.set('ota_id',q('otaId').value||'');
+  p.set('trig_idx',q('trigIdx').value||'');
+  p.set('trig_dir',q('trigDir').value||'');
+  p.set('trig_delay_ms',q('trigDelay').value||'');
+  p.set('trig_hold_ms',q('trigHold').value||'');
+  p.set('trig_src_vi',q('trigSrcVi').value||'');
+  const out=await safeRun('command:'+name,'/api/command?'+p.toString());
+  out.ui_info=info||'';
+  show(out);
+}
+
+async function refreshState(){
+  const s=await safeRun('state','/api/state');
+  show(s);
+  q('stateLine').textContent='wifi='+(s.wifi_status||'?')+' ip='+(s.ip||'?')+' paired='+(s.paired_count||0)+' discovered='+(s.discovered_count||0);
+}
+
+async function refreshDiscovery(){
+  const out=await safeRun('discovery_snapshot','/api/discovery/snapshot?refresh=1&timeout_ms='+(q('timeoutMs').value||'5000'));
+  const rows=q('discRows'); rows.innerHTML='';
+  (out.peers||[]).forEach(p=>{
+    const rssiText=(typeof p.rssi!=='undefined' && p.rssi!==null)?p.rssi:'';
+    const tr=document.createElement('tr');
+    const tdMac=document.createElement('td');
+    tdMac.textContent=p.peer||'';
+    const tdRole=document.createElement('td');
+    tdRole.textContent=p.role||'UNKNOWN';
+    const tdName=document.createElement('td');
+    tdName.textContent=p.name||'';
+    const tdRssi=document.createElement('td');
+    tdRssi.textContent=String(rssiText);
+    const tdUse=document.createElement('td');
+    const btn=document.createElement('button');
+    btn.textContent='use';
+    btn.onclick=function(){setTarget(p.peer||'');};
+    tdUse.appendChild(btn);
+    tr.appendChild(tdMac);
+    tr.appendChild(tdRole);
+    tr.appendChild(tdName);
+    tr.appendChild(tdRssi);
+    tr.appendChild(tdUse);
+    rows.appendChild(tr);
+  });
+  show(out);
+}
+
+async function refreshPaired(){
+  const out=await safeRun('paired_snapshot','/api/paired/snapshot?refresh=1&timeout_ms='+(q('timeoutMs').value||'5000'));
+  const rows=q('pairRows'); rows.innerHTML='';
+  (out.peers||[]).forEach(p=>{
+    const tr=document.createElement('tr');
+    const tdMac=document.createElement('td');
+    tdMac.textContent=p.peer||'';
+    const tdRole=document.createElement('td');
+    tdRole.textContent=p.role||'UNKNOWN';
+    const tdUse=document.createElement('td');
+    const btn=document.createElement('button');
+    btn.textContent='use';
+    btn.onclick=function(){setTarget(p.peer||'');};
+    tdUse.appendChild(btn);
+    tr.appendChild(tdMac);
+    tr.appendChild(tdRole);
+    tr.appendChild(tdUse);
+    rows.appendChild(tr);
+  });
+  show(out);
+}
+
+async function refreshEvents(){
+  const out=await safeRun('events','/api/events?since_seq='+enc('evtSince')+'&limit='+enc('evtLimit'));
+  if(out&&out.next_seq!==undefined){q('evtSince').value=out.next_seq;}
+  show(out);
+}
+
+function clearOut(){
+  q('out').textContent='cleared';
+  setMeta('Response cleared',false);
+}
+
+async function copyOut(){
+  try{
+    await navigator.clipboard.writeText(q('out').textContent||'');
+    setMeta('Response copied to clipboard',false);
+  }catch(e){
+    setMeta('Copy failed: '+String(e),true);
+  }
+}
+
+window.addEventListener('error',function(e){
+  setMeta('JS error: '+(e&&e.message?e.message:'unknown'),true);
+});
+window.addEventListener('unhandledrejection',function(e){
+  setMeta('Promise error: '+String(e&&e.reason?e.reason:e),true);
+});
+
+refreshState();
+refreshDiscovery();
+refreshPaired();
+</script>
+</body></html>
