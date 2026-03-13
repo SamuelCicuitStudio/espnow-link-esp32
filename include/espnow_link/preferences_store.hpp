@@ -104,7 +104,7 @@ class PreferencesStore {
 #endif
 
   /** @brief Save uint16 value by key. */
-  bool putU16(const char* key, uint16_t value) { return prefs_.putUShort(key, value) == value; }
+  bool putU16(const char* key, uint16_t value) { return prefs_.putUShort(key, value) == sizeof(uint16_t); }
 
   /** @brief Load uint16 value by key. */
   bool getU16(const char* key, uint16_t& out) {
@@ -116,7 +116,7 @@ class PreferencesStore {
   }
 
   /** @brief Save uint32 value by key. */
-  bool putU32(const char* key, uint32_t value) { return prefs_.putUInt(key, value) == value; }
+  bool putU32(const char* key, uint32_t value) { return prefs_.putUInt(key, value) == sizeof(uint32_t); }
 
   /** @brief Load uint32 value by key. */
   bool getU32(const char* key, uint32_t& out) {
@@ -128,7 +128,7 @@ class PreferencesStore {
   }
 
   /** @brief Save bool value by key. */
-  bool putBool(const char* key, bool value) { return prefs_.putBool(key, value) == value; }
+  bool putBool(const char* key, bool value) { return prefs_.putBool(key, value) == sizeof(uint8_t); }
 
   /** @brief Load bool value by key. */
   bool getBool(const char* key, bool& out) {
@@ -140,7 +140,7 @@ class PreferencesStore {
   }
 
   /** @brief Save float value by key. */
-  bool putFloat(const char* key, float value) { return prefs_.putFloat(key, value) == value; }
+  bool putFloat(const char* key, float value) { return prefs_.putFloat(key, value) == sizeof(float_t); }
 
   /** @brief Load float value by key. */
   bool getFloat(const char* key, float& out) {
