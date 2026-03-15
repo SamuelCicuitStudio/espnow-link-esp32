@@ -26,7 +26,7 @@ constexpr const char* kRouterSsid = "geyehub";
 constexpr const char* kRouterPassword = "123456789";
 
 EspNowArduinoTransport g_transport;
-PreferencesStore g_nvs("enl_master");
+PreferencesStore g_nvs{};
 PersistenceAdapter<PreferencesStore> g_persist(g_nvs);
 ArduinoSelectableLogStorageBackend g_log_backend(false, ArduinoSelectableLogStorageBackend::SpiffsOwnershipMode::ExternalMounted);
 EspLogStore g_log_store(g_log_backend);
@@ -672,7 +672,7 @@ void applyWifiFrontendOrchestrationDefaultsFromNvs() {
 }  // namespace
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(250000);
   delay(600);
   Serial.println("[MASTER] boot");
   // Keep STA interface up for ESP-NOW TX compatibility, but do not connect to any router.

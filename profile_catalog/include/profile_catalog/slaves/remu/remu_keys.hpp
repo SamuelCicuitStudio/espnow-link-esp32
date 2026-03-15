@@ -51,6 +51,10 @@
 #define PCAT_REMU_CKEY_RTLM "rtlm"  // Per-child relay thermal limit (C).
 #define PCAT_REMU_CKEY_SAMA "sama"  // Per-child sensor-A MAC.
 #define PCAT_REMU_CKEY_SBMA "sbma"  // Per-child sensor-B MAC.
+#define PCAT_REMU_CKEY_OENA "oena"  // Per-child direct output enable (ON/OFF).
+
+// REMU child public setting suffixes.
+#define PCAT_REMU_CSET_OENA "output_enable"  // Child ON/OFF key: v<vid>.output_enable.
 
 // Public setting keys.
 #define PCAT_REMU_SET_DNAME "device_name"
@@ -87,6 +91,7 @@
 #define PCAT_REMU_MET_BITMAP "relay_bitmap" // Global relay state bitmap.
 #define PCAT_REMU_MET_RCOUNT "relay_count"  // Active virtual relay count.
 #define PCAT_REMU_MET_TEMP "env_temp_c"     // Shared DS18B20 ambient temperature.
+#define PCAT_REMU_MET_UPTIME "uptime_ms"    // Node uptime.
 
 // Defaults and ranges.
 #define PCAT_REMU_SET_CHAN_DEF 1U
@@ -133,7 +138,7 @@
 #define PCAT_REMU_SET_TOPV_DEF 0U
 
 #define PCAT_REMU_SETMAP "device_name,channel,relay_count,split_idx,global_pulse_ms,global_hold_ms,repeat_ms,interlock_json,sensor_a_mac,sensor_b_mac,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
-#define PCAT_REMU_METMAP "relay_bitmap,relay_count,env_temp_c"
+#define PCAT_REMU_METMAP "relay_bitmap,relay_count,env_temp_c,uptime_ms"
 #define PCAT_REMU_EVMAP "relay_triggered,topology_applied,source_rejected"
 
 #define PCAT_ASSERT_REMU_CHILD_CODE4_LEN(code_literal) \
@@ -176,3 +181,4 @@ PCAT_ASSERT_REMU_CHILD_CODE4_LEN(PCAT_REMU_CKEY_ILOK);
 PCAT_ASSERT_REMU_CHILD_CODE4_LEN(PCAT_REMU_CKEY_RTLM);
 PCAT_ASSERT_REMU_CHILD_CODE4_LEN(PCAT_REMU_CKEY_SAMA);
 PCAT_ASSERT_REMU_CHILD_CODE4_LEN(PCAT_REMU_CKEY_SBMA);
+PCAT_ASSERT_REMU_CHILD_CODE4_LEN(PCAT_REMU_CKEY_OENA);

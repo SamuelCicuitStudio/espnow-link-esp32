@@ -3327,7 +3327,9 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
   if (!startsWith(lower, "topology.")) {
     return false;
   }
-  if (management_transport_ == nullptr) {
+  const bool is_topology_edit_cmd =
+      startsWith(lower, "topology.edit.") || startsWith(lower, "topology.file.show");
+  if (!is_topology_edit_cmd && management_transport_ == nullptr) {
     io_.writeln("[MASTER][TOPO] management path unavailable");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::DeniedByPolicy, "availability");
     return true;
@@ -3415,6 +3417,595 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
     }
     return true;
   };
+
+  struct TopologyEditNodeState {
+    ChainNodeType type = ChainNodeType::Sensor;
+    MacAddress mac{};
+    int32_t vi = -1;
+  };
+  struct TopologyEditState {
+    bool initialized = false;
+    uint32_t topology_version = 1U;
+    std::vector<uint32_t> seeds{};
+    std::vector<TopologyEditNodeState> chain{};
+  };
+  static TopologyEditState topology_edit{};
+  if (!topology_edit.initialized) {
+    topology_edit.initialized = true;
+    topology_edit.topology_version = static_cast<uint32_t>(std::time(nullptr));
+    if (topology_edit.topology_version == 0U) {
+      topology_edit.topology_version = 1U;
+    }
+  }
+
+  auto chainTypeToken = [](ChainNodeType type) -> const char* {
+    switch (type) {
+      case ChainNodeType::Sensor:
+        return "S";
+      case ChainNodeType::Relay:
+        return "R";
+      case ChainNodeType::SemuChild:
+        return "SM";
+      case ChainNodeType::RemuChild:
+        return "RM";
+    }
+    return "?";
+  };
+
+  auto parseI32Token = [](const std::string& token, int32_t& out) -> bool {
+    if (token.empty()) {
+      return false;
+    }
+    char* end = nullptr;
+    const long v = std::strtol(token.c_str(), &end, 10);
+    if (end == nullptr || *end != '\0') {
+      return false;
+    }
+    if (v < static_cast<long>(std::numeric_limits<int32_t>::min()) ||
+        v > static_cast<long>(std::numeric_limits<int32_t>::max())) {
+      return false;
+    }
+    out = static_cast<int32_t>(v);
+    return true;
+  };
+
+  auto parseSeedCsv = [&](const std::string& csv, std::vector<uint32_t>& out) -> bool {
+    out.clear();
+    std::string item;
+    for (size_t i = 0; i <= csv.size(); ++i) {
+      const bool at_end = (i == csv.size());
+      const char c = at_end ? ',' : csv[i];
+      if (c == ',') {
+        const std::string token = trim(item);
+        item.clear();
+        if (token.empty()) {
+          return false;
+        }
+        uint32_t seed = 0U;
+        if (!parseU32Token(token, seed) || seed == 0U) {
+          return false;
+        }
+        out.push_back(seed);
+        continue;
+      }
+      item.push_back(c);
+    }
+    return !out.empty();
+  };
+
+  auto resolveTopologyPeerToken = [&](const std::string& token, MacAddress& out_mac) -> bool {
+    if (parseMac(token, out_mac)) {
+      return true;
+    }
+    char* end = nullptr;
+    const long idx = std::strtol(token.c_str(), &end, 10);
+    if (end == nullptr || *end != '\0' || idx < 0) {
+      return false;
+    }
+    std::vector<MacAddress> paired{};
+    manager_.getPersistedPeers(paired);
+    if (static_cast<size_t>(idx) >= paired.size()) {
+      return false;
+    }
+    out_mac = paired[static_cast<size_t>(idx)];
+    return true;
+  };
+
+  auto countRelayBlocks = [&](const std::vector<TopologyEditNodeState>& chain) -> size_t {
+    size_t group_count = 0U;
+    bool in_relay_block = false;
+    for (const auto& node : chain) {
+      const bool relay = isChainRelay(node.type);
+      if (relay && !in_relay_block) {
+        ++group_count;
+      }
+      in_relay_block = relay;
+    }
+    return group_count;
+  };
+
+  auto resolveEditorSeeds = [&](size_t group_count,
+                                std::vector<uint32_t>& out_seeds,
+                                bool& auto_seeded) {
+    auto_seeded = false;
+    out_seeds.clear();
+    if (group_count == 0U) {
+      return;
+    }
+    out_seeds.reserve(group_count);
+    for (size_t i = 0; i < group_count; ++i) {
+      uint32_t seed = static_cast<uint32_t>(101U + i);
+      if (i < topology_edit.seeds.size() && topology_edit.seeds[i] != 0U) {
+        seed = topology_edit.seeds[i];
+      } else {
+        auto_seeded = true;
+      }
+      out_seeds.push_back(seed);
+    }
+    if (topology_edit.seeds.size() != group_count) {
+      auto_seeded = true;
+    }
+  };
+
+  auto buildEditorJson = [&](const std::vector<uint32_t>& seeds) -> std::string {
+    std::string json;
+    json += "{\n";
+    json += "  \"v\": 2,\n";
+    json += "  \"topo_ver\": " + std::to_string(topology_edit.topology_version) + ",\n";
+    json += "  \"seed\": [";
+    for (size_t i = 0; i < seeds.size(); ++i) {
+      if (i > 0U) {
+        json += ", ";
+      }
+      json += std::to_string(seeds[i]);
+    }
+    json += "],\n";
+    json += "  \"chain\": [\n";
+    for (size_t i = 0; i < topology_edit.chain.size(); ++i) {
+      const auto& node = topology_edit.chain[i];
+      json += "    { \"t\": \"";
+      json += chainTypeToken(node.type);
+      json += "\", \"m\": \"";
+      json += macToPrintable(node.mac);
+      json += "\", \"vi\": ";
+      json += std::to_string(node.vi);
+      json += " }";
+      if (i + 1U < topology_edit.chain.size()) {
+        json += ",";
+      }
+      json += "\n";
+    }
+    json += "  ]\n";
+    json += "}\n";
+    return json;
+  };
+
+  auto buildValidatedEditorJson = [&](std::string& out_json,
+                                      std::vector<uint32_t>& out_resolved_seeds,
+                                      uint32_t& out_topology_version,
+                                      size_t& out_group_count,
+                                      size_t& out_target_count,
+                                      std::string& out_error) -> bool {
+    out_json.clear();
+    out_resolved_seeds.clear();
+    out_topology_version = topology_edit.topology_version;
+    out_group_count = 0U;
+    out_target_count = 0U;
+    out_error.clear();
+
+    out_group_count = countRelayBlocks(topology_edit.chain);
+    bool auto_seeded = false;
+    resolveEditorSeeds(out_group_count, out_resolved_seeds, auto_seeded);
+    (void)auto_seeded;
+    out_json = buildEditorJson(out_resolved_seeds);
+
+    uint32_t parsed_topology_version = out_topology_version;
+    std::vector<TopologyDeployTarget> targets{};
+    std::string parse_error;
+    if (!parseTopologyChainJson(out_json,
+                                parsed_topology_version,
+                                targets,
+                                parsed_topology_version,
+                                parse_error,
+                                nullptr)) {
+      out_error = parse_error;
+      return false;
+    }
+    out_topology_version = parsed_topology_version;
+    out_target_count = targets.size();
+    return true;
+  };
+
+  auto loadEditorFromJson = [&](const std::string& json_text, std::string& out_error) -> bool {
+    out_error.clear();
+
+    uint32_t schema_version = 0U;
+    if (!extractJsonU32Value(json_text, "v", schema_version) || schema_version != 2U) {
+      out_error = "schema version invalid (expected v=2)";
+      return false;
+    }
+
+    uint32_t topology_version = static_cast<uint32_t>(std::time(nullptr));
+    if (topology_version == 0U) {
+      topology_version = 1U;
+    }
+    uint32_t topo_ver_from_json = 0U;
+    if (extractJsonU32Value(json_text, "topo_ver", topo_ver_from_json) &&
+        topo_ver_from_json != 0U) {
+      topology_version = topo_ver_from_json;
+    }
+
+    std::vector<uint32_t> seeds{};
+    if (!parseJsonU32Array(json_text, "seed", seeds)) {
+      out_error = "seed array missing or invalid";
+      return false;
+    }
+
+    std::string chain_slice;
+    if (!extractJsonArraySlice(json_text, "chain", chain_slice)) {
+      out_error = "chain array missing";
+      return false;
+    }
+    std::vector<std::string> chain_items{};
+    if (!splitJsonArrayObjects(chain_slice, chain_items)) {
+      out_error = "chain array invalid";
+      return false;
+    }
+
+    std::vector<TopologyEditNodeState> chain{};
+    chain.reserve(chain_items.size());
+    for (const std::string& item : chain_items) {
+      std::string type_token;
+      std::string mac_token;
+      int32_t vi = -1;
+      if (!extractJsonStringValue(item, "t", type_token) ||
+          !extractJsonStringValue(item, "m", mac_token) ||
+          !extractJsonI32Value(item, "vi", vi)) {
+        out_error = "chain node missing t/m/vi";
+        return false;
+      }
+
+      TopologyEditNodeState node{};
+      if (!parseChainNodeType(type_token, node.type)) {
+        out_error = "chain node type invalid";
+        return false;
+      }
+      if (!parseMac(mac_token, node.mac)) {
+        out_error = "chain node mac invalid";
+        return false;
+      }
+      node.vi = vi;
+
+      if ((node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) && node.vi != -1) {
+        out_error = "physical node vi must be -1";
+        return false;
+      }
+      if (node.type == ChainNodeType::SemuChild && (node.vi < 0 || node.vi > 7)) {
+        out_error = "semu vi out of range (0..7)";
+        return false;
+      }
+      if (node.type == ChainNodeType::RemuChild && (node.vi < 0 || node.vi > 15)) {
+        out_error = "remu vi out of range (0..15)";
+        return false;
+      }
+      chain.push_back(node);
+    }
+
+    uint32_t validated_topology_version = topology_version;
+    std::vector<TopologyDeployTarget> targets{};
+    std::string parse_error;
+    if (!parseTopologyChainJson(json_text,
+                                validated_topology_version,
+                                targets,
+                                validated_topology_version,
+                                parse_error,
+                                nullptr)) {
+      out_error = parse_error;
+      return false;
+    }
+
+    topology_edit.topology_version = validated_topology_version;
+    topology_edit.seeds = seeds;
+    topology_edit.chain = chain;
+    return true;
+  };
+
+  if (cmd_lower == "topology.edit.help") {
+    io_.writeln("[MASTER][TOPO][EDIT] commands:");
+    io_.writeln("  topology.edit.new [topo_ver] [seed_csv]");
+    io_.writeln("  topology.edit.add <S|R|SM|RM> <paired_index|MAC> [vi]");
+    io_.writeln("  topology.edit.del <chain_pos>");
+    io_.writeln("  topology.edit.clear");
+    io_.writeln("  topology.edit.show");
+    io_.writeln("  topology.edit.validate");
+    io_.writeln("  topology.edit.save [path]");
+    io_.writeln("  topology.edit.load [path]");
+    io_.writeln("  topology.file.show [path]");
+    io_.writeln("[MASTER][TOPO][EDIT] rules: start/end with S|SM, no adjacent S|SM, R and RM adjacency allowed");
+    return true;
+  }
+
+  if (cmd_lower == "topology.file.show" || startsWith(cmd_lower, "topology.file.show ")) {
+    if (ota_push_storage_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][EDIT] local storage backend unavailable");
+      return true;
+    }
+    std::string path_token = trim(cmd_line.substr(std::strlen("topology.file.show")));
+    if (path_token.empty()) {
+      path_token = "/o/s/topology_chain.json";
+    }
+    const std::string path = normalizeTopoPath(path_token);
+    std::string json_text;
+    std::string read_msg;
+    if (!readTextFileLocal(*ota_push_storage_, path, json_text, read_msg)) {
+      writef("[MASTER][TOPO][EDIT] file show failed path=%s reason=%s",
+             path.c_str(),
+             read_msg.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][EDIT] file=%s bytes=%u",
+           path.c_str(),
+           static_cast<unsigned int>(json_text.size()));
+    io_.writeln(json_text);
+    return true;
+  }
+
+  if (cmd_lower == "topology.edit.new" || startsWith(cmd_lower, "topology.edit.new ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() > 3U) {
+      io_.writeln("[MASTER][TOPO][EDIT] usage: topology.edit.new [topo_ver] [seed_csv]");
+      return true;
+    }
+    topology_edit.chain.clear();
+    topology_edit.seeds.clear();
+    topology_edit.topology_version = static_cast<uint32_t>(std::time(nullptr));
+    if (topology_edit.topology_version == 0U) {
+      topology_edit.topology_version = 1U;
+    }
+
+    if (tok.size() >= 2U) {
+      uint32_t topo_ver = 0U;
+      if (!parseU32Token(tok[1], topo_ver) || topo_ver == 0U) {
+        io_.writeln("[MASTER][TOPO][EDIT] invalid topo_ver");
+        return true;
+      }
+      topology_edit.topology_version = topo_ver;
+    }
+    if (tok.size() >= 3U) {
+      std::vector<uint32_t> parsed_seeds{};
+      if (!parseSeedCsv(tok[2], parsed_seeds)) {
+        io_.writeln("[MASTER][TOPO][EDIT] invalid seed_csv (example: 101,102,103)");
+        return true;
+      }
+      topology_edit.seeds = parsed_seeds;
+    }
+    writef("[MASTER][TOPO][EDIT] new editor topo_ver=%lu seeds=%u",
+           static_cast<unsigned long>(topology_edit.topology_version),
+           static_cast<unsigned int>(topology_edit.seeds.size()));
+    return true;
+  }
+
+  if (cmd_lower == "topology.edit.clear") {
+    topology_edit.chain.clear();
+    writef("[MASTER][TOPO][EDIT] chain cleared topo_ver=%lu seeds=%u",
+           static_cast<unsigned long>(topology_edit.topology_version),
+           static_cast<unsigned int>(topology_edit.seeds.size()));
+    return true;
+  }
+
+  if (startsWith(cmd_lower, "topology.edit.add ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() < 3U || tok.size() > 4U) {
+      io_.writeln("[MASTER][TOPO][EDIT] usage: topology.edit.add <S|R|SM|RM> <paired_index|MAC> [vi]");
+      return true;
+    }
+
+    TopologyEditNodeState node{};
+    if (!parseChainNodeType(tok[1], node.type)) {
+      io_.writeln("[MASTER][TOPO][EDIT] invalid type (use S|R|SM|RM)");
+      return true;
+    }
+    if (!resolveTopologyPeerToken(tok[2], node.mac)) {
+      io_.writeln("[MASTER][TOPO][EDIT] invalid peer selector (use paired index or MAC)");
+      return true;
+    }
+
+    node.vi = -1;
+    if (tok.size() >= 4U) {
+      if (!parseI32Token(tok[3], node.vi)) {
+        io_.writeln("[MASTER][TOPO][EDIT] invalid vi");
+        return true;
+      }
+    }
+    if ((node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay)) {
+      if (tok.size() >= 4U || node.vi != -1) {
+        io_.writeln("[MASTER][TOPO][EDIT] S/R nodes require vi=-1 and no explicit vi argument");
+        return true;
+      }
+    }
+    if (node.type == ChainNodeType::SemuChild) {
+      if (tok.size() < 4U || node.vi < 0 || node.vi > 7) {
+        io_.writeln("[MASTER][TOPO][EDIT] SM requires vi in range 0..7");
+        return true;
+      }
+    }
+    if (node.type == ChainNodeType::RemuChild) {
+      if (tok.size() < 4U || node.vi < 0 || node.vi > 15) {
+        io_.writeln("[MASTER][TOPO][EDIT] RM requires vi in range 0..15");
+        return true;
+      }
+    }
+
+    topology_edit.chain.push_back(node);
+    writef("[MASTER][TOPO][EDIT] add pos=%u type=%s peer=%s vi=%d",
+           static_cast<unsigned int>(topology_edit.chain.size() - 1U),
+           chainTypeToken(node.type),
+           macToPrintable(node.mac).c_str(),
+           static_cast<int>(node.vi));
+    return true;
+  }
+
+  if (startsWith(cmd_lower, "topology.edit.del ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() != 2U) {
+      io_.writeln("[MASTER][TOPO][EDIT] usage: topology.edit.del <chain_pos>");
+      return true;
+    }
+    uint32_t pos = 0U;
+    if (!parseU32Token(tok[1], pos)) {
+      io_.writeln("[MASTER][TOPO][EDIT] invalid chain_pos");
+      return true;
+    }
+    if (pos >= topology_edit.chain.size()) {
+      writef("[MASTER][TOPO][EDIT] chain_pos out of range (size=%u)",
+             static_cast<unsigned int>(topology_edit.chain.size()));
+      return true;
+    }
+    topology_edit.chain.erase(topology_edit.chain.begin() + pos);
+    writef("[MASTER][TOPO][EDIT] deleted chain_pos=%u now_nodes=%u",
+           static_cast<unsigned int>(pos),
+           static_cast<unsigned int>(topology_edit.chain.size()));
+    return true;
+  }
+
+  if (cmd_lower == "topology.edit.show") {
+    const size_t relay_groups = countRelayBlocks(topology_edit.chain);
+    writef("[MASTER][TOPO][EDIT] topo_ver=%lu nodes=%u relay_groups=%u seeds=%u",
+           static_cast<unsigned long>(topology_edit.topology_version),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups),
+           static_cast<unsigned int>(topology_edit.seeds.size()));
+    if (!topology_edit.seeds.empty()) {
+      std::string csv;
+      for (size_t i = 0; i < topology_edit.seeds.size(); ++i) {
+        if (i > 0U) {
+          csv += ",";
+        }
+        csv += std::to_string(topology_edit.seeds[i]);
+      }
+      writef("[MASTER][TOPO][EDIT] seeds_csv=%s", csv.c_str());
+    }
+    for (size_t i = 0; i < topology_edit.chain.size(); ++i) {
+      const auto& node = topology_edit.chain[i];
+      writef("  %u) t=%s mac=%s vi=%d",
+             static_cast<unsigned int>(i),
+             chainTypeToken(node.type),
+             macToPrintable(node.mac).c_str(),
+             static_cast<int>(node.vi));
+    }
+    return true;
+  }
+
+  if (cmd_lower == "topology.edit.validate") {
+    std::string json_text;
+    std::vector<uint32_t> resolved_seeds{};
+    uint32_t validated_topology_version = topology_edit.topology_version;
+    size_t relay_groups = 0U;
+    size_t target_count = 0U;
+    std::string error;
+    if (!buildValidatedEditorJson(json_text,
+                                  resolved_seeds,
+                                  validated_topology_version,
+                                  relay_groups,
+                                  target_count,
+                                  error)) {
+      writef("[MASTER][TOPO][EDIT] invalid: %s", error.c_str());
+      return true;
+    }
+    const bool seeds_changed = (resolved_seeds != topology_edit.seeds);
+    topology_edit.seeds = resolved_seeds;
+    topology_edit.topology_version = validated_topology_version;
+    writef("[MASTER][TOPO][EDIT] valid topo_ver=%lu nodes=%u relay_groups=%u targets=%u seeds=%u",
+           static_cast<unsigned long>(validated_topology_version),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups),
+           static_cast<unsigned int>(target_count),
+           static_cast<unsigned int>(topology_edit.seeds.size()));
+    if (seeds_changed) {
+      io_.writeln("[MASTER][TOPO][EDIT] note: seeds auto-materialized to match relay block count");
+    }
+    return true;
+  }
+
+  if (cmd_lower == "topology.edit.save" || startsWith(cmd_lower, "topology.edit.save ")) {
+    if (ota_push_storage_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][EDIT] local storage backend unavailable");
+      return true;
+    }
+    std::string path_token = trim(cmd_line.substr(std::strlen("topology.edit.save")));
+    if (path_token.empty()) {
+      path_token = "/o/s/topology_chain.json";
+    }
+    const std::string path = normalizeTopoPath(path_token);
+
+    std::string json_text;
+    std::vector<uint32_t> resolved_seeds{};
+    uint32_t validated_topology_version = topology_edit.topology_version;
+    size_t relay_groups = 0U;
+    size_t target_count = 0U;
+    std::string error;
+    if (!buildValidatedEditorJson(json_text,
+                                  resolved_seeds,
+                                  validated_topology_version,
+                                  relay_groups,
+                                  target_count,
+                                  error)) {
+      writef("[MASTER][TOPO][EDIT] save blocked: invalid chain (%s)", error.c_str());
+      return true;
+    }
+    topology_edit.seeds = resolved_seeds;
+    topology_edit.topology_version = validated_topology_version;
+
+    std::string write_msg;
+    if (!writeTextFileLocal(*ota_push_storage_, path, json_text, write_msg)) {
+      writef("[MASTER][TOPO][EDIT] save failed path=%s reason=%s",
+             path.c_str(),
+             write_msg.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][EDIT] saved path=%s topo_ver=%lu nodes=%u relay_groups=%u targets=%u",
+           path.c_str(),
+           static_cast<unsigned long>(topology_edit.topology_version),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups),
+           static_cast<unsigned int>(target_count));
+    return true;
+  }
+
+  if (cmd_lower == "topology.edit.load" || startsWith(cmd_lower, "topology.edit.load ")) {
+    if (ota_push_storage_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][EDIT] local storage backend unavailable");
+      return true;
+    }
+    std::string path_token = trim(cmd_line.substr(std::strlen("topology.edit.load")));
+    if (path_token.empty()) {
+      path_token = "/o/s/topology_chain.json";
+    }
+    const std::string path = normalizeTopoPath(path_token);
+
+    std::string json_text;
+    std::string read_msg;
+    if (!readTextFileLocal(*ota_push_storage_, path, json_text, read_msg)) {
+      writef("[MASTER][TOPO][EDIT] load failed path=%s reason=%s",
+             path.c_str(),
+             read_msg.c_str());
+      return true;
+    }
+
+    std::string load_error;
+    if (!loadEditorFromJson(json_text, load_error)) {
+      writef("[MASTER][TOPO][EDIT] load parse failed path=%s reason=%s",
+             path.c_str(),
+             load_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][EDIT] loaded path=%s topo_ver=%lu nodes=%u seeds=%u",
+           path.c_str(),
+           static_cast<unsigned long>(topology_edit.topology_version),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(topology_edit.seeds.size()));
+    return true;
+  }
 
   if (cmd_lower == "topology.status") {
     ManagementController mgmt = makeController();
@@ -4238,19 +4829,12 @@ bool MasterCli::handleDescriptorShortCommands(const std::string& lower) {
     semu_telem_child_filter_active_ = true;
     semu_telem_child_filter_vid_ = static_cast<uint8_t>(vid);
     semu_telem_child_filter_max_vid_ = max_vid;
-    if (management_transport_ == nullptr) {
-      io_.writeln("[MASTER][CLI] management path unavailable");
-      captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::DeniedByPolicy, "availability");
-      return true;
-    }
-    ManagementController mgmt(*management_transport_);
-    mgmt.setNextReqId(correlation_id_);
-    const bool ok = submitRuntimeTargeted_(mgmt, static_cast<uint16_t>(ManagementCommandId::TelemPull));
-    correlation_id_ = mgmt.nextReqId();
+    const std::string queued_msg =
+        std::string("[MASTER][CLI] requested ") + profile_label + " child telemetry vid=" +
+        std::to_string(static_cast<unsigned int>(semu_telem_child_filter_vid_)) + " (+global)";
+    const bool ok = startPagedFetch(PagedFetchKind::TelemetrySnapshot, 6, queued_msg.c_str());
     if (ok) {
-      writef("[MASTER][CLI] requested %s child telemetry vid=%u (+global)",
-             profile_label,
-             static_cast<unsigned int>(semu_telem_child_filter_vid_));
+      // queued message emitted by startPagedFetch
     } else {
       semu_telem_child_filter_active_ = false;
       io_.writeln("[MASTER][CLI] child telemetry request failed");
@@ -4260,17 +4844,9 @@ bool MasterCli::handleDescriptorShortCommands(const std::string& lower) {
   if (lower == "telem.now") {
     semu_telem_child_filter_active_ = false;
     semu_telem_child_filter_max_vid_ = 7U;
-    if (management_transport_ == nullptr) {
-      io_.writeln("[MASTER][CLI] management path unavailable");
-      captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::DeniedByPolicy, "availability");
-      return true;
-    }
-    ManagementController mgmt(*management_transport_);
-    mgmt.setNextReqId(correlation_id_);
-    const bool ok = submitRuntimeTargeted_(mgmt, static_cast<uint16_t>(ManagementCommandId::TelemPull));
-    correlation_id_ = mgmt.nextReqId();
+    const bool ok = startPagedFetch(PagedFetchKind::TelemetrySnapshot, 6, "[MASTER][CLI] requested live telemetry");
     if (ok) {
-      io_.writeln("[MASTER][CLI] requested live telemetry");
+      // queued message emitted by startPagedFetch
     } else {
       io_.writeln("[MASTER][CLI] live telemetry request failed");
     }
@@ -5853,11 +6429,14 @@ void MasterCli::clearPagedFetchState() {
   paged_fetch_restart_count_ = 0;
   paged_caps_cache_.clear();
   paged_telem_cache_.clear();
+  paged_telem_samples_cache_.clear();
   paged_settings_cache_.clear();
   paged_ota_manifest_cache_.clear();
   paged_caps_seen_keys_.clear();
   paged_telem_seen_ids_.clear();
   paged_telem_seen_keys_.clear();
+  paged_telem_samples_seen_ids_.clear();
+  paged_telem_samples_seen_keys_.clear();
   paged_settings_seen_ids_.clear();
   paged_settings_seen_keys_.clear();
   paged_ota_seen_ids_.clear();
@@ -5874,6 +6453,10 @@ bool MasterCli::enqueuePagedFetchPage(uint16_t cursor) {
   }
   if (paged_fetch_kind_ == PagedFetchKind::Telemetry) {
     return enqueueDescriptorQuery("TELEM.PAGE " + std::to_string(cursor) + " " + std::to_string(paged_fetch_page_size_),
+                                  &paged_fetch_target_peer_);
+  }
+  if (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot) {
+    return enqueueDescriptorQuery("TELEM.PULL.PAGE " + std::to_string(cursor) + " " + std::to_string(paged_fetch_page_size_),
                                   &paged_fetch_target_peer_);
   }
   if (paged_fetch_kind_ == PagedFetchKind::Settings) {
@@ -5926,6 +6509,9 @@ void MasterCli::printPagedFetchSummary() const {
   } else if (paged_fetch_kind_ == PagedFetchKind::Telemetry) {
     kind = "telem";
     received = paged_telem_cache_.size();
+  } else if (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot) {
+    kind = "telem.now";
+    received = paged_telem_samples_cache_.size();
   } else if (paged_fetch_kind_ == PagedFetchKind::Settings) {
     kind = "settings";
     received = paged_settings_cache_.size();
@@ -5954,14 +6540,22 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
           ? DescriptorResponseType::Capabilities
           : (paged_fetch_kind_ == PagedFetchKind::Telemetry
                  ? DescriptorResponseType::Telemetry
-                 : (paged_fetch_kind_ == PagedFetchKind::Settings ? DescriptorResponseType::Settings
-                                                                  : DescriptorResponseType::OtaManifest));
+                 : (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot
+                        ? DescriptorResponseType::TelemetrySnapshot
+                        : (paged_fetch_kind_ == PagedFetchKind::Settings ? DescriptorResponseType::Settings
+                                                                         : DescriptorResponseType::OtaManifest)));
 
   if (d.type != expected) {
     return false;
   }
 
   if (!d.is_paged) {
+    if (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot) {
+      // Compatibility path: older nodes may return non-paged live telemetry.
+      printDescriptorResponse(d);
+      clearPagedFetchState();
+      return true;
+    }
     io_.writeln("[MASTER][CLI] paged fetch failed: non-paged response");
     clearPagedFetchState();
     return true;
@@ -5976,11 +6570,14 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     ++paged_fetch_restart_count_;
     paged_caps_cache_.clear();
     paged_telem_cache_.clear();
+    paged_telem_samples_cache_.clear();
     paged_settings_cache_.clear();
     paged_ota_manifest_cache_.clear();
     paged_caps_seen_keys_.clear();
     paged_telem_seen_ids_.clear();
     paged_telem_seen_keys_.clear();
+    paged_telem_samples_seen_ids_.clear();
+    paged_telem_samples_seen_keys_.clear();
     paged_settings_seen_ids_.clear();
     paged_settings_seen_keys_.clear();
     paged_ota_seen_ids_.clear();
@@ -6007,7 +6604,8 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     paged_fetch_snapshot_locked_ = true;
     paged_fetch_snapshot_id_ = d.snapshot_id;
     paged_fetch_total_count_ = d.total_count;
-  } else if (paged_fetch_snapshot_id_ != d.snapshot_id) {
+  } else if (paged_fetch_kind_ != PagedFetchKind::TelemetrySnapshot &&
+             paged_fetch_snapshot_id_ != d.snapshot_id) {
     if (paged_fetch_restart_count_ >= 1U) {
       io_.writeln("[MASTER][CLI] paged fetch failed: snapshot changed repeatedly");
       clearPagedFetchState();
@@ -6016,16 +6614,21 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     ++paged_fetch_restart_count_;
     paged_caps_cache_.clear();
     paged_telem_cache_.clear();
+    paged_telem_samples_cache_.clear();
     paged_settings_cache_.clear();
     paged_ota_manifest_cache_.clear();
     paged_caps_seen_keys_.clear();
     paged_telem_seen_ids_.clear();
     paged_telem_seen_keys_.clear();
+    paged_telem_samples_seen_ids_.clear();
+    paged_telem_samples_seen_keys_.clear();
     paged_settings_seen_ids_.clear();
     paged_settings_seen_keys_.clear();
     paged_ota_seen_ids_.clear();
     paged_ota_seen_names_.clear();
     paged_fetch_snapshot_locked_ = false;
+    paged_fetch_expected_cursor_ = 0;
+    paged_fetch_next_cursor_ = 0;
     if (!enqueuePagedFetchPage(0)) {
       io_.writeln("[MASTER][CLI] paged fetch restart failed");
       clearPagedFetchState();
@@ -6052,6 +6655,18 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
       }
       if (inserted) {
         paged_telem_cache_.push_back(t);
+      }
+    }
+  } else if (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot) {
+    for (const auto& s : d.telemetry_samples) {
+      bool inserted = false;
+      if (s.metric_id != 0U) {
+        inserted = paged_telem_samples_seen_ids_.insert(s.metric_id).second;
+      } else {
+        inserted = paged_telem_samples_seen_keys_.insert(s.key).second;
+      }
+      if (inserted) {
+        paged_telem_samples_cache_.push_back(s);
       }
     }
   } else if (paged_fetch_kind_ == PagedFetchKind::Settings) {
@@ -6090,11 +6705,14 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
       ++paged_fetch_restart_count_;
       paged_caps_cache_.clear();
       paged_telem_cache_.clear();
+      paged_telem_samples_cache_.clear();
       paged_settings_cache_.clear();
       paged_ota_manifest_cache_.clear();
       paged_caps_seen_keys_.clear();
       paged_telem_seen_ids_.clear();
       paged_telem_seen_keys_.clear();
+      paged_telem_samples_seen_ids_.clear();
+      paged_telem_samples_seen_keys_.clear();
       paged_settings_seen_ids_.clear();
       paged_settings_seen_keys_.clear();
       paged_ota_seen_ids_.clear();
@@ -6130,6 +6748,8 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     received = paged_caps_cache_.size();
   } else if (paged_fetch_kind_ == PagedFetchKind::Telemetry) {
     received = paged_telem_cache_.size();
+  } else if (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot) {
+    received = paged_telem_samples_cache_.size();
   } else if (paged_fetch_kind_ == PagedFetchKind::Settings) {
     received = paged_settings_cache_.size();
   } else if (paged_fetch_kind_ == PagedFetchKind::OtaManifest) {
@@ -6147,11 +6767,14 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     ++paged_fetch_restart_count_;
     paged_caps_cache_.clear();
     paged_telem_cache_.clear();
+    paged_telem_samples_cache_.clear();
     paged_settings_cache_.clear();
     paged_ota_manifest_cache_.clear();
     paged_caps_seen_keys_.clear();
     paged_telem_seen_ids_.clear();
     paged_telem_seen_keys_.clear();
+    paged_telem_samples_seen_ids_.clear();
+    paged_telem_samples_seen_keys_.clear();
     paged_settings_seen_ids_.clear();
     paged_settings_seen_keys_.clear();
     paged_ota_seen_ids_.clear();
@@ -6188,6 +6811,8 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     merged.capabilities = paged_caps_cache_;
   } else if (paged_fetch_kind_ == PagedFetchKind::Telemetry) {
     merged.telemetry = paged_telem_cache_;
+  } else if (paged_fetch_kind_ == PagedFetchKind::TelemetrySnapshot) {
+    merged.telemetry_samples = paged_telem_samples_cache_;
   } else if (paged_fetch_kind_ == PagedFetchKind::Settings) {
     merged.settings = paged_settings_cache_;
   } else if (paged_fetch_kind_ == PagedFetchKind::OtaManifest) {
@@ -6363,6 +6988,9 @@ bool MasterCli::executeDescriptorQueryNow(const std::string& cmd, const MacAddre
                        buildPagePayload(page_cursor, page_size));
   } else if (parsePageCmd(cmd, "TELEM.PAGE ", page_cursor, page_size)) {
     sent = sendMgmtRaw(ManagementCommandId::TelemSchemaPageGet,
+                       buildPagePayload(page_cursor, page_size));
+  } else if (parsePageCmd(cmd, "TELEM.PULL.PAGE ", page_cursor, page_size)) {
+    sent = sendMgmtRaw(ManagementCommandId::TelemPull,
                        buildPagePayload(page_cursor, page_size));
   } else if (parsePageCmd(cmd, "SETTINGS.PAGE ", page_cursor, page_size)) {
     sent = sendMgmtRaw(ManagementCommandId::SettingsPageGet,

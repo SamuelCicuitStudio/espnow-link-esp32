@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <Preferences.h>
+#include "espnow_link/nvs_contract.hpp"
 #if defined(ARDUINO)
 #include <WString.h>
 #endif
@@ -21,10 +22,13 @@ class PreferencesStore {
    * @brief Construct preferences store wrapper.
    * @param ns Preferences namespace.
    */
-  explicit PreferencesStore(const char* ns = "enl") : ns_(ns == nullptr ? "enl" : ns) {}
+  explicit PreferencesStore(const char* ns = kSharedNvsNamespace,
+                            const char* partition = kSharedNvsPartition)
+      : ns_(ns == nullptr ? kSharedNvsNamespace : ns),
+        partition_(partition == nullptr ? kSharedNvsPartition : partition) {}
 
   /** @brief Open preferences namespace for read/write. */
-  bool begin() { return prefs_.begin(ns_.c_str(), false); }
+  bool begin() { return prefs_.begin(ns_.c_str(), false, partition_.c_str()); }
 
   /** @brief Save binary blob by key. */
   bool putBlob(const std::string& key, const uint8_t* data, size_t len) {
@@ -153,6 +157,7 @@ class PreferencesStore {
 
  private:
   std::string ns_;
+  std::string partition_;
   Preferences prefs_;
 };
 

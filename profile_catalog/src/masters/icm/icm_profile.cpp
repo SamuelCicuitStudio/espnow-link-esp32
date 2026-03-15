@@ -299,6 +299,7 @@ bool IcmAppDescriptorProvider::getCapabilities(std::vector<espnow_link::Capabili
   out.clear();
   out.push_back({"multi_slave_14", "Hard max 14 paired peers, no balancing"});
   out.push_back({"targeted_commands", "Per-slave control via index or mac"});
+  out.push_back({"output_onoff", "Direct ON/OFF control for RELAY outputs and REMU child outputs"});
   out.push_back({"liveness_monitor", "Change-only online/offline transitions"});
   out.push_back({"pairing_control", "pair/unpair/remove orchestration"});
   out.push_back({"settings_rw", "App-owned schema and NVS keys"});

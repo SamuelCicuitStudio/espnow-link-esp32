@@ -3505,9 +3505,19 @@ bool ManagementService::runDescriptorPull(const ManagementRequest& request, uint
       sent = pull_->requestTelemetrySchemaPage(peer, args.cursor, args.page_size, request.req_id);
       break;
     }
-    case ManagementCommandId::TelemPull:
-      sent = pull_->requestTelemetryPull(peer, request.req_id);
+    case ManagementCommandId::TelemPull: {
+      if (!request.payload.empty()) {
+        PageArgs args{};
+        if (!parsePageArgs(request.payload, args)) {
+          peerResponse(ManagementStatus::BadPayload);
+          return true;
+        }
+        sent = pull_->requestTelemetryPullPage(peer, args.cursor, args.page_size, request.req_id);
+      } else {
+        sent = pull_->requestTelemetryPull(peer, request.req_id);
+      }
       break;
+    }
     case ManagementCommandId::LiveGet:
       sent = pull_->requestLiveness(peer, request.req_id);
       break;
@@ -4962,6 +4972,7 @@ uint32_t ManagementService::commandTimeoutMs(uint16_t cmd_id) {
   const ManagementCommandId c = static_cast<ManagementCommandId>(cmd_id);
   if (c == ManagementCommandId::PairRequest || c == ManagementCommandId::UnpairRequest ||
       c == ManagementCommandId::CommTestRun) return 5000;
+  if (c == ManagementCommandId::SettingsGet || c == ManagementCommandId::SettingsPageGet) return 5000;
   if (c == ManagementCommandId::LogLocalRead || c == ManagementCommandId::LogRemoteRead) return 3000;
   if (c == ManagementCommandId::StorageFormat) return 30000;
   if (c == ManagementCommandId::OtaTransferBegin || c == ManagementCommandId::OtaTransferChunk ||

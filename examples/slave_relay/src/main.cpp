@@ -40,7 +40,7 @@ constexpr const char* kResetKey = "rstkey";
 constexpr const char* kRestartRequestKey = "rstrq";
 
 EspNowArduinoTransport g_transport;
-PreferencesStore g_nvs("enl_slave");
+PreferencesStore g_nvs{};
 ArduinoSelectableLogStorageBackend g_log_backend(false, ArduinoSelectableLogStorageBackend::SpiffsOwnershipMode::ExternalMounted);
 EspLogStore g_log_store(g_log_backend);
 LibraryLogger g_logger(&g_log_store);

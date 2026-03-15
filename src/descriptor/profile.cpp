@@ -116,10 +116,14 @@ class SensProfile final : public IProfileDefinition {
   const std::vector<ProfileTelemetryMetricSpec> telemetry_ = {
       {0x01, "tfl_a_mm"},
       {0x02, "tfl_b_mm"},
-      {0x03, "env_temp_c"},
-      {0x04, "env_hum_pct"},
-      {0x05, "env_press_pa"},
-      {0x06, "lux"},
+      {0x03, "tfl_a_flux"},
+      {0x04, "tfl_b_flux"},
+      {0x05, "tfl_a_temp_c"},
+      {0x06, "tfl_b_temp_c"},
+      {0x07, "env_temp_c"},
+      {0x08, "env_hum_pct"},
+      {0x09, "env_press_pa"},
+      {0x0A, "lux"},
   };
 
   const std::vector<ProfileSettingSpec> settings_ = {
@@ -129,11 +133,18 @@ class SensProfile final : public IProfileDefinition {
       {0x0102, "next_mac"},
       {0x0103, "pos_relays"},
       {0x0104, "neg_relays"},
-      {0x0201, "tf_near_mm"},
-      {0x0202, "tf_far_mm"},
+      {0x0201, "detect_fall_delta_cm"},
+      {0x0202, "detect_release_delta_cm"},
       {0x0203, "ab_spacing_mm"},
       {0x0204, "als_t0_lux"},
       {0x0205, "als_t1_lux"},
+      {0x0206, "detect_window_ms"},
+      {0x0207, "detect_clear_hold_ms"},
+      {0x0208, "relay_on_ms"},
+      {0x0209, "relay_off_ms"},
+      {0x020A, "lead_count"},
+      {0x020B, "lead_step_ms"},
+      {0x0301, "LoopAuto"},
       {0x0901, "topo_version"},
       {0x0902, "topo_seed_id"},
       {0x0903, "topo_state"},
@@ -167,7 +178,14 @@ class SemuProfile final : public IProfileDefinition {
   const std::vector<ProfileTelemetryMetricSpec> telemetry_ = {
       {0x01, "v0_tfl_a_mm"},
       {0x02, "v0_tfl_b_mm"},
-      {0x03, "lux"},
+      {0x03, "v0_tfl_a_flux"},
+      {0x04, "v0_tfl_b_flux"},
+      {0x05, "v0_tfl_a_temp_c"},
+      {0x06, "v0_tfl_b_temp_c"},
+      {0x07, "env_temp_c"},
+      {0x08, "env_hum_pct"},
+      {0x09, "env_press_pa"},
+      {0x0A, "lux"},
   };
 
   const std::vector<ProfileSettingSpec> settings_ = {

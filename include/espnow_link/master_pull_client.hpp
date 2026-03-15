@@ -62,6 +62,8 @@ class MasterPullClient {
   bool requestTelemetrySchemaPage(const MacAddress& to, uint16_t cursor, uint8_t page_size, uint32_t corr_id);
   /** @brief Request live telemetry snapshot from peer. */
   bool requestTelemetryPull(const MacAddress& to, uint32_t corr_id);
+  /** @brief Request one live telemetry snapshot page from peer. */
+  bool requestTelemetryPullPage(const MacAddress& to, uint16_t cursor, uint8_t page_size, uint32_t corr_id);
   /** @brief Request liveness status from peer. */
   bool requestLiveness(const MacAddress& to, uint32_t corr_id);
   /** @brief Request time status from peer. */

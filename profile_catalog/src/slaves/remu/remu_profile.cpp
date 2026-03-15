@@ -77,6 +77,7 @@ constexpr TelemetryDef kTelemetryDefs[] = {
     {0x01, PCAT_REMU_MET_BITMAP, "mask", 0.0f, 4294967295.0f, "type=u32;unit=mask;pull=1;push=1"},
     {0x02, PCAT_REMU_MET_RCOUNT, "count", 0.0f, 255.0f, "type=u8;unit=count;pull=1;push=1"},
     {0x03, PCAT_REMU_MET_TEMP, "C", -55.0f, 125.0f, "type=f32;unit=C;pull=1;push=1"},
+    {0x04, PCAT_REMU_MET_UPTIME, "ms", 0.0f, 4294967295.0f, "type=u32;unit=ms;pull=1;push=1"},
 };
 
 constexpr SettingDef kSettingDefs[] = {
@@ -121,7 +122,6 @@ constexpr uint8_t kRemuChildMax = static_cast<uint8_t>(PCAT_REMU_SET_RCNT_MAX);
 
 constexpr ChildTelemetryDef kChildTelemetryDefs[] = {
     {"relay_bitmap", "mask", 0.0f, 1.0f, "type=u8;unit=mask;pull=1;push=1;child=1"},
-    {"uptime_ms", "ms", 0.0f, 4294967295.0f, "type=u32;unit=ms;pull=1;push=1;child=1"},
 };
 
 constexpr ChildSettingDef kChildSettingDefs[] = {
@@ -132,6 +132,7 @@ constexpr ChildSettingDef kChildSettingDefs[] = {
     {"rt_limit_c", espnow_link::SettingValueType::Int, PCAT_REMU_CKEY_RTLM, "80", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_RELAY_SET_RTLIM_MIN, PCAT_RELAY_SET_RTLIM_MAX, false, 0.0f, 0.0f, nullptr},
     {"sensor_a_mac", espnow_link::SettingValueType::String, PCAT_REMU_CKEY_SAMA, "00:00:00:00:00:00", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"sensor_b_mac", espnow_link::SettingValueType::String, PCAT_REMU_CKEY_SBMA, "00:00:00:00:00:00", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {PCAT_REMU_CSET_OENA, espnow_link::SettingValueType::Bool, PCAT_REMU_CKEY_OENA, "0", "type=bool;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
 };
 
 std::string buildChildScopedKey(uint8_t vid, const char* suffix) {
@@ -374,6 +375,7 @@ bool RemuAppDescriptorProvider::getCapabilities(std::vector<espnow_link::Capabil
   out.push_back({"topology", "Topology allowed-source map and commit state"});
   out.push_back({"childset", "Per-child settings key format: v{0..15}.<relay_field>"});
   out.push_back({"childmet", "Per-child telemetry key format: v{0..15}.<relay_metric>"});
+  out.push_back({"child_onoff", "Direct child ON/OFF via v{0..15}.output_enable"});
   return true;
 }
 
@@ -853,14 +855,12 @@ bool RemuAppDescriptorProvider::appendTelemetryFromRuntime_(std::vector<espnow_l
   out.push_back(makeSample(0x01, PCAT_REMU_MET_BITMAP, std::to_string(static_cast<unsigned long>(snapshot.relay_bitmap)), "mask"));
   out.push_back(makeSample(0x02, PCAT_REMU_MET_RCOUNT, std::to_string(static_cast<unsigned long>(relay_count)), "count"));
   out.push_back(makeSample(0x03, PCAT_REMU_MET_TEMP, formatFloat_(env_temp_c), "C"));
+  out.push_back(makeSample(0x04, PCAT_REMU_MET_UPTIME, std::to_string(static_cast<unsigned long>(now)), "ms"));
 
   for (uint8_t vid = 0U; vid < static_cast<uint8_t>(relay_count); ++vid) {
     const uint32_t child_state = ((snapshot.relay_bitmap >> vid) & 0x01U);
-    const uint32_t child_uptime = now + static_cast<uint32_t>(vid) * 37U;
     out.push_back(makeSample(buildChildTelemetryId(vid, 1U), buildChildScopedKey(vid, "relay_bitmap").c_str(),
                              std::to_string(static_cast<unsigned long>(child_state)), "mask"));
-    out.push_back(makeSample(buildChildTelemetryId(vid, 2U), buildChildScopedKey(vid, "uptime_ms").c_str(),
-                             std::to_string(static_cast<unsigned long>(child_uptime)), "ms"));
   }
   return true;
 }

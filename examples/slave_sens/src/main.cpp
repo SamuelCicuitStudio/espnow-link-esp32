@@ -40,7 +40,7 @@ constexpr const char* kResetKey = "rstkey";
 constexpr const char* kRestartRequestKey = "rstrq";
 
 EspNowArduinoTransport g_transport;
-PreferencesStore g_nvs("enl_slave");
+PreferencesStore g_nvs{};
 ArduinoSelectableLogStorageBackend g_log_backend(false, ArduinoSelectableLogStorageBackend::SpiffsOwnershipMode::ExternalMounted);
 EspLogStore g_log_store(g_log_backend);
 LibraryLogger g_logger(&g_log_store);
@@ -84,6 +84,10 @@ bool readSensTelemetry(void* user, app_owned::SensRuntimeTelemetrySnapshot& out)
   const float phase = static_cast<float>(now % 16000U) / 16000.0f;
   out.tfl_a_mm = 450 + static_cast<int32_t>((seed * 13U) % 320U);
   out.tfl_b_mm = 480 + static_cast<int32_t>((seed * 19U) % 280U);
+  out.tfl_a_flux = 100 + static_cast<int32_t>((seed * 7U) % 360U);
+  out.tfl_b_flux = 120 + static_cast<int32_t>((seed * 11U) % 360U);
+  out.tfl_a_temp_c_x100 = 2200 + static_cast<int32_t>((seed * 5U) % 700U);
+  out.tfl_b_temp_c_x100 = 2250 + static_cast<int32_t>((seed * 3U) % 700U);
   out.env_temp_c = 20.5f + (9.0f * phase);
   out.env_hum_pct = 36.0f + (34.0f * phase);
   out.env_press_pa = 100900.0f + (310.0f * phase);

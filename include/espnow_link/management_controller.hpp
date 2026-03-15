@@ -183,6 +183,10 @@ class ManagementController {
                               uint32_t* out_req_id = nullptr,
                               uint32_t timeout_ms = 0);
   bool telemetryPull(uint32_t* out_req_id = nullptr, uint32_t timeout_ms = 0);
+  bool telemetryPullPageGet(uint16_t cursor,
+                            uint8_t page_size,
+                            uint32_t* out_req_id = nullptr,
+                            uint32_t timeout_ms = 0);
   bool livenessGet(uint32_t* out_req_id = nullptr, uint32_t timeout_ms = 0);
   bool liveMonitorEnable(uint32_t* out_req_id = nullptr, uint32_t timeout_ms = 0);
   bool liveMonitorDisable(uint32_t* out_req_id = nullptr, uint32_t timeout_ms = 0);

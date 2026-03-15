@@ -211,6 +211,16 @@ bool ManagementController::telemetryPull(uint32_t* out_req_id, uint32_t timeout_
   return submitCommand_(ManagementCommandId::TelemPull, {}, out_req_id, timeout_ms);
 }
 
+bool ManagementController::telemetryPullPageGet(uint16_t cursor,
+                                                uint8_t page_size,
+                                                uint32_t* out_req_id,
+                                                uint32_t timeout_ms) {
+  std::vector<uint8_t> payload;
+  management_utils::appendU16Le(payload, cursor);
+  payload.push_back(page_size);
+  return submitCommand_(ManagementCommandId::TelemPull, payload, out_req_id, timeout_ms);
+}
+
 bool ManagementController::livenessGet(uint32_t* out_req_id, uint32_t timeout_ms) {
   return submitCommand_(ManagementCommandId::LiveGet, {}, out_req_id, timeout_ms);
 }

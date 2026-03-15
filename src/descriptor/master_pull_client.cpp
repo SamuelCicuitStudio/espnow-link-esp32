@@ -60,6 +60,18 @@ bool MasterPullClient::requestTelemetryPull(const MacAddress& to, uint32_t corr_
   return requestSimple(to, DescriptorQueryType::PullTelemetry, corr_id);
 }
 
+bool MasterPullClient::requestTelemetryPullPage(const MacAddress& to,
+                                                uint16_t cursor,
+                                                uint8_t page_size,
+                                                uint32_t corr_id) {
+  DescriptorQuery q{};
+  q.type = DescriptorQueryType::PullTelemetry;
+  q.paged = true;
+  q.cursor = cursor;
+  q.page_size = page_size;
+  return sendDescriptorQuery(to, q, corr_id);
+}
+
 bool MasterPullClient::requestLiveness(const MacAddress& to, uint32_t corr_id) {
   return requestSimple(to, DescriptorQueryType::GetLiveness, corr_id);
 }

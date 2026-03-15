@@ -246,6 +246,7 @@ bool RelayAppDescriptorProvider::getCapabilities(std::vector<espnow_link::Capabi
   out.push_back({"l2sink", "L2P v1 trigger sink (authorized sources only)"});
   out.push_back({"tpush", "Compact-indexed push compatible schema order"});
   out.push_back({"topology", "Topology commit + allowed source filters"});
+  out.push_back({"output_onoff", "Direct output ON/OFF via relay1_enable/relay2_enable"});
   return true;
 }
 

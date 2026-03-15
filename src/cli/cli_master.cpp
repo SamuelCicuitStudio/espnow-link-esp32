@@ -433,12 +433,22 @@ void MasterCli::printHelp() {
   io_.writeln("  topology.apply.file <path>        Stage then commit from local file");
   io_.writeln("  topology.plan.file <path>         Dry topology processing report (no RF send)");
   io_.writeln("  topology.deploy.file <path>       Fan-out stage+commit to all persisted paired peers");
+  io_.writeln("  topology.edit.new [topo_ver] [seed_csv]  Start/reset CLI chain editor");
+  io_.writeln("  topology.edit.add <S|R|SM|RM> <paired_index|MAC> [vi]  Append one chain node");
+  io_.writeln("  topology.edit.del <chain_pos>     Delete one node at zero-based position");
+  io_.writeln("  topology.edit.clear               Clear in-memory chain nodes");
+  io_.writeln("  topology.edit.show                Show in-memory chain and seeds");
+  io_.writeln("  topology.edit.validate            Validate editor chain with parser rules");
+  io_.writeln("  topology.edit.save [path]         Save JSON chain file (default /o/s/topology_chain.json)");
+  io_.writeln("  topology.edit.load [path]         Load JSON chain file into editor");
+  io_.writeln("  topology.file.show [path]         Print raw topology JSON file");
   io_.writeln("  topology.local.status             Local-only status (force no target)");
   io_.writeln("  topology.local.slots [state]      Local-only slot dump");
   io_.writeln("  topology.local.stage.hex <hex>    Local-only stage");
   io_.writeln("  topology.local.stage.file <path>  Local-only stage");
   io_.writeln("  topology.local.commit             Local-only commit");
   io_.writeln("  note: stage payload must be full binary stream format (no partial diff)");
+  io_.writeln("  rules: chain starts/ends with S or SM; no adjacent S/SM; R and RM adjacency allowed");
   io_.writeln("");
 
   io_.writeln("[DESCRIPTOR / PROFILE]");
@@ -460,7 +470,7 @@ void MasterCli::printHelp() {
   io_.writeln("  get.id <setting_id>               Read setting by numeric ID");
   io_.writeln("  set <setting_key>=<value>         Write setting by key");
   io_.writeln("  set.id <setting_id>=<value>       Write setting by numeric ID");
-  io_.writeln("  note: SEMU child key syntax: v<0..7>.<sens_field>   (example: v2.tf_near_mm)");
+  io_.writeln("  note: SEMU child key syntax: v<0..7>.<sens_field>   (example: v2.detect_fall_delta_cm)");
   io_.writeln("  note: REMU child key syntax: v<0..15>.<relay_field> (example: v9.pulse_ms)");
   io_.writeln("");
 
@@ -643,7 +653,17 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
     io_.writeln("  topology.apply.file <path>        Stage then commit");
     io_.writeln("  topology.plan.file <path>         Dry processing report (no RF send)");
     io_.writeln("  topology.deploy.file <path>       Stage+commit fan-out to all paired peers");
+    io_.writeln("  topology.edit.new [topo_ver] [seed_csv]");
+    io_.writeln("  topology.edit.add <S|R|SM|RM> <paired_index|mac> [vi]");
+    io_.writeln("  topology.edit.del <chain_pos>     Delete one chain node");
+    io_.writeln("  topology.edit.clear               Clear in-memory chain");
+    io_.writeln("  topology.edit.show                Show in-memory chain");
+    io_.writeln("  topology.edit.validate            Validate with chain parser rules");
+    io_.writeln("  topology.edit.save [path]         Save editor chain JSON to storage");
+    io_.writeln("  topology.edit.load [path]         Load chain JSON into editor");
+    io_.writeln("  topology.file.show [path]         Print raw topology JSON file");
     io_.writeln("  topology.local.*                  Same commands but forced local-only (no target)");
+    io_.writeln("  chain rules                       start/end with S|SM; no adjacent S/SM; R/RM adjacency allowed");
     io_.writeln("  target syntax                     <index> <command> or <mac> <command> works on topology.*");
     return true;
   }
@@ -683,7 +703,7 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
     io_.writeln("  get <key> | get.id <id>      Read one setting");
     io_.writeln("  set <key>=<v> | set.id ...   Write one setting");
     io_.writeln("  child keys: v<vid>.<field>   (SEMU vid=0..7, REMU vid=0..15)");
-    io_.writeln("  examples: get v1.tf_far_mm   set v6.pulse_ms=750");
+    io_.writeln("  examples: get v1.detect_release_delta_cm   set v6.pulse_ms=750");
     io_.writeln("  note: values are validated by descriptor provider rules");
     return true;
   }

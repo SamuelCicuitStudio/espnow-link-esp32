@@ -246,6 +246,7 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
     None = 0,
     Capabilities,
     Telemetry,
+    TelemetrySnapshot,
     Settings,
     OtaManifest,
   };
@@ -413,11 +414,14 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
   uint8_t paged_fetch_restart_count_ = 0;
   std::vector<CapabilityDescriptor> paged_caps_cache_{};
   std::vector<TelemetryDescriptor> paged_telem_cache_{};
+  std::vector<TelemetrySample> paged_telem_samples_cache_{};
   std::vector<SettingDescriptor> paged_settings_cache_{};
   std::vector<OtaManifestEntry> paged_ota_manifest_cache_{};
   std::unordered_set<std::string> paged_caps_seen_keys_{};
   std::unordered_set<uint16_t> paged_telem_seen_ids_{};
   std::unordered_set<std::string> paged_telem_seen_keys_{};
+  std::unordered_set<uint16_t> paged_telem_samples_seen_ids_{};
+  std::unordered_set<std::string> paged_telem_samples_seen_keys_{};
   std::unordered_set<uint16_t> paged_settings_seen_ids_{};
   std::unordered_set<std::string> paged_settings_seen_keys_{};
   std::unordered_set<uint32_t> paged_ota_seen_ids_{};

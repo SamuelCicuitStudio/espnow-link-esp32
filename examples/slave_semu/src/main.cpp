@@ -40,7 +40,7 @@ constexpr const char* kResetKey = "rstkey";
 constexpr const char* kRestartRequestKey = "rstrq";
 
 EspNowArduinoTransport g_transport;
-PreferencesStore g_nvs("enl_slave");
+PreferencesStore g_nvs{};
 ArduinoSelectableLogStorageBackend g_log_backend(false, ArduinoSelectableLogStorageBackend::SpiffsOwnershipMode::ExternalMounted);
 EspLogStore g_log_store(g_log_backend);
 LibraryLogger g_logger(&g_log_store);
@@ -93,12 +93,24 @@ bool readSemuTelemetry(void* user, app_owned::SemuRuntimeTelemetrySnapshot& out)
   for (uint8_t vid = 0U; vid < app_owned::SemuRuntimeTelemetrySnapshot::kMaxPairs; ++vid) {
     out.tfl_a_mm[vid] = 0;
     out.tfl_b_mm[vid] = 0;
+    out.tfl_a_flux[vid] = 0;
+    out.tfl_b_flux[vid] = 0;
+    out.tfl_a_temp_c_x100[vid] = 0;
+    out.tfl_b_temp_c_x100[vid] = 0;
   }
   for (uint8_t vid = 0U; vid < kPairCount; ++vid) {
     const int32_t base = 520 + static_cast<int32_t>(vid) * 45;
     const int32_t drift = static_cast<int32_t>(((step * 17U) + (vid * 31U)) % 220U);
+    const int32_t flux_a = 90 + static_cast<int32_t>(((step * 11U) + (vid * 17U)) % 320U);
+    const int32_t flux_b = 95 + static_cast<int32_t>(((step * 13U) + (vid * 19U)) % 320U);
+    const int32_t temp_a_x100 = 2150 + static_cast<int32_t>(((step * 3U) + (vid * 29U)) % 650U);
+    const int32_t temp_b_x100 = 2180 + static_cast<int32_t>(((step * 5U) + (vid * 23U)) % 650U);
     out.tfl_a_mm[vid] = base + drift;
     out.tfl_b_mm[vid] = base + 28 + ((drift * 3) % 180);
+    out.tfl_a_flux[vid] = flux_a;
+    out.tfl_b_flux[vid] = flux_b;
+    out.tfl_a_temp_c_x100[vid] = temp_a_x100;
+    out.tfl_b_temp_c_x100[vid] = temp_b_x100;
   }
 
   out.valid = true;

@@ -6,7 +6,6 @@
 #include <cstring>
 #include <ctime>
 #include <cmath>
-#include <cctype>
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -20,8 +19,6 @@ namespace {
 constexpr const char* kSemuProfileIdText = "4";
 constexpr const char* kSemuSchemaRev = "1";
 constexpr const char* kSemuSchemaHash = "sem001";
-constexpr uint32_t kLidarProvisionAddrMin = 0x08U;
-constexpr uint32_t kLidarProvisionAddrMax = 0x77U;
 
 struct TelemetryDef {
   uint16_t id;
@@ -81,6 +78,10 @@ constexpr uint8_t kSemuChildMax = static_cast<uint8_t>(PCAT_SEMU_SET_SCNT_MAX);
 constexpr ChildTelemetryDef kChildTelemetryDefs[] = {
     {"tfl_a_mm", "mm", -32768.0f, 32767.0f, "type=i16;unit=mm;pull=1;push=1;child=1"},
     {"tfl_b_mm", "mm", -32768.0f, 32767.0f, "type=i16;unit=mm;pull=1;push=1;child=1"},
+    {"tfl_a_flux", "count", 0.0f, 65535.0f, "type=u16;unit=count;pull=1;push=1;child=1"},
+    {"tfl_b_flux", "count", 0.0f, 65535.0f, "type=u16;unit=count;pull=1;push=1;child=1"},
+    {"tfl_a_temp_c", "C", -40.0f, 125.0f, "type=f32;unit=C;pull=1;push=1;child=1"},
+    {"tfl_b_temp_c", "C", -40.0f, 125.0f, "type=f32;unit=C;pull=1;push=1;child=1"},
 };
 
 constexpr ChildSettingDef kChildSettingDefs[] = {
@@ -88,20 +89,19 @@ constexpr ChildSettingDef kChildSettingDefs[] = {
     {"next_mac", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_NEXT, "00:00:00:00:00:00", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"pos_relays", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_POSR, "[]", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"neg_relays", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_NEGR, "[]", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
-    {"tf_near_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFNR, "200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFNR_MIN, PCAT_SENS_SET_TFNR_MAX, false, 0.0f, 0.0f, nullptr},
-    {"tf_far_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFFR, "3200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFFR_MIN, PCAT_SENS_SET_TFFR_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_fall_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFNR, "200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFNR_MIN, PCAT_SENS_SET_TFNR_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_release_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFFR, "3200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFFR_MIN, PCAT_SENS_SET_TFFR_MAX, false, 0.0f, 0.0f, nullptr},
     {"ab_spacing_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ABSP, "350", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_ABSP_MIN, PCAT_SENS_SET_ABSP_MAX, false, 0.0f, 0.0f, nullptr},
+    {"tfl_a_calib_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CALA, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SEMU_SET_CALA_MIN, PCAT_SEMU_SET_CALA_MAX, false, 0.0f, 0.0f, nullptr},
+    {"tfl_b_calib_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CALB, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SEMU_SET_CALB_MIN, PCAT_SEMU_SET_CALB_MAX, false, 0.0f, 0.0f, nullptr},
     {"als_t0_lux", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ALS0, "180", "type=u32;rw=1;min=1;max=65535;child=1", true, PCAT_SENS_SET_ALS0_MIN, PCAT_SENS_SET_ALS0_MAX, false, 0.0f, 0.0f, nullptr},
     {"als_t1_lux", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ALS1, "300", "type=u32;rw=1;min=1;max=65535;child=1", true, PCAT_SENS_SET_ALS1_MIN, PCAT_SENS_SET_ALS1_MAX, false, 0.0f, 0.0f, nullptr},
-    {"confirm_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CFMS, "140", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_CFM_MIN, PCAT_SENS_SET_CFM_MAX, false, 0.0f, 0.0f, nullptr},
-    {"stop_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_STMS, "1200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_STP_MIN, PCAT_SENS_SET_STP_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_window_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CFMS, "140", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_CFM_MIN, PCAT_SENS_SET_CFM_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_clear_hold_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_STMS, "1200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_STP_MIN, PCAT_SENS_SET_STP_MAX, false, 0.0f, 0.0f, nullptr},
     {"relay_on_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_RONM, "600", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_RON_MIN, PCAT_SENS_SET_RON_MAX, false, 0.0f, 0.0f, nullptr},
     {"relay_off_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ROFM, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_ROF_MIN, PCAT_SENS_SET_ROF_MAX, false, 0.0f, 0.0f, nullptr},
     {"lead_count", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_LCNT, "3", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_SENS_SET_LCNT_MIN, PCAT_SENS_SET_LCNT_MAX, false, 0.0f, 0.0f, nullptr},
     {"lead_step_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_LSTM, "250", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_LSTP_MIN, PCAT_SENS_SET_LSTP_MAX, false, 0.0f, 0.0f, nullptr},
-    {"tfl_a_addr", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFAA, "16", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_SENS_SET_TFAA_MIN, PCAT_SENS_SET_TFAA_MAX, false, 0.0f, 0.0f, nullptr},
-    {"tfl_b_addr", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFBA, "17", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_SENS_SET_TFBA_MIN, PCAT_SENS_SET_TFBA_MAX, false, 0.0f, 0.0f, nullptr},
-    {"tfl_fps", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFFP, "0", "type=u32;rw=1;min=0;max=250;child=1", true, 0U, 250U, false, 0.0f, 0.0f, nullptr},
 };
 
 std::string buildChildScopedKey(uint8_t vid, const char* suffix) {
@@ -191,8 +191,6 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0903, PCAT_SEMU_SET_TOPST, espnow_link::SettingValueType::String, PCAT_SEMU_KEY_TOPST, "staged", "type=str;rw=1;enum=staged|committed", false, 0U, 0U, false, 0.0f, 0.0f, "staged|committed"},
     {0x0904, PCAT_SEMU_SET_TOPR, espnow_link::SettingValueType::String, PCAT_SEMU_KEY_TOPR, "[]", "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0905, PCAT_SEMU_SET_TOPC, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_TOPC, "0", "type=u32;rw=1;min=0;max=4294967295", true, 0U, 0xFFFFFFFFU, false, 0.0f, 0.0f, nullptr},
-    {0x0A11, PCAT_SEMU_SET_LPRSEMU, espnow_link::SettingValueType::String, PCAT_SEMU_KEY_LPRQ, PCAT_SEMU_SET_LPRSEMU_DEF, "type=cmd;rw=1;schema=pass:A|B,source_addr:u8,channel_mask:u32", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
-    {0x0A12, PCAT_SEMU_SET_LPRSTA, espnow_link::SettingValueType::String, PCAT_SEMU_KEY_LPRS, PCAT_SEMU_SET_LPRSTA_DEF, "type=cmd;rw=1;schema=status", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
 };
 
 constexpr EventDef kEventDefs[] = {
@@ -237,128 +235,6 @@ bool parseFloat(const std::string& value, float& out) {
   }
   out = parsed;
   return true;
-}
-
-std::string trimAscii(const std::string& in) {
-  size_t begin = 0U;
-  while (begin < in.size() && std::isspace(static_cast<unsigned char>(in[begin])) != 0) {
-    ++begin;
-  }
-  size_t end = in.size();
-  while (end > begin && std::isspace(static_cast<unsigned char>(in[end - 1U])) != 0) {
-    --end;
-  }
-  return in.substr(begin, end - begin);
-}
-
-std::string toLowerAscii(const std::string& in) {
-  std::string out{};
-  out.reserve(in.size());
-  for (const char ch : in) {
-    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-  }
-  return out;
-}
-
-bool extractKvToken(const std::string& input, const char* key, std::string& out_value) {
-  out_value.clear();
-  if (key == nullptr || *key == '\0') return false;
-  const std::string wanted = toLowerAscii(trimAscii(std::string(key)));
-  if (wanted.empty()) return false;
-
-  size_t cursor = 0U;
-  while (cursor < input.size()) {
-    size_t next = input.find_first_of(",;", cursor);
-    if (next == std::string::npos) next = input.size();
-    const std::string token = trimAscii(input.substr(cursor, next - cursor));
-    if (!token.empty()) {
-      const size_t eq = token.find('=');
-      if (eq != std::string::npos) {
-        const std::string lhs = toLowerAscii(trimAscii(token.substr(0U, eq)));
-        if (lhs == wanted) {
-          out_value = trimAscii(token.substr(eq + 1U));
-          return !out_value.empty();
-        }
-      }
-    }
-    cursor = (next < input.size()) ? (next + 1U) : next;
-  }
-  return false;
-}
-
-bool parseU32Any(const std::string& value, uint32_t& out) {
-  const std::string trimmed = trimAscii(value);
-  if (trimmed.empty()) return false;
-  char* endp = nullptr;
-  const unsigned long parsed = std::strtoul(trimmed.c_str(), &endp, 0);
-  if (endp == nullptr || *endp != '\0') return false;
-  out = static_cast<uint32_t>(parsed);
-  return true;
-}
-
-bool parseProvisionPass(const std::string& token, char& out_pass) {
-  const std::string normalized = toLowerAscii(trimAscii(token));
-  if (normalized == "a") {
-    out_pass = 'A';
-    return true;
-  }
-  if (normalized == "b") {
-    out_pass = 'B';
-    return true;
-  }
-  return false;
-}
-
-bool normalizeSemuProvisionValue(const std::string& value, std::string& out_norm, std::string& out_error) {
-  out_norm.clear();
-  out_error.clear();
-
-  char pass = '\0';
-  std::string pass_token{};
-  if (extractKvToken(value, "pass", pass_token)) {
-    if (!parseProvisionPass(pass_token, pass)) {
-      out_error = "invalid pass (expected A or B)";
-      return false;
-    }
-  } else if (!parseProvisionPass(value, pass)) {
-    out_error = "missing pass (expected pass=A|B)";
-    return false;
-  }
-
-  uint32_t source_addr = static_cast<uint32_t>(PCAT_SENS_SET_TFAA_DEF);
-  std::string source_token{};
-  if (extractKvToken(value, "source_addr", source_token) || extractKvToken(value, "source", source_token)) {
-    if (!parseU32Any(source_token, source_addr)) {
-      out_error = "invalid source_addr";
-      return false;
-    }
-  }
-  if (source_addr < kLidarProvisionAddrMin || source_addr > kLidarProvisionAddrMax) {
-    out_error = "source_addr out of range";
-    return false;
-  }
-
-  uint32_t channel_mask = 0U;
-  std::string mask_token{};
-  if (extractKvToken(value, "channel_mask", mask_token) || extractKvToken(value, "mask", mask_token)) {
-    if (!parseU32Any(mask_token, channel_mask)) {
-      out_error = "invalid channel_mask";
-      return false;
-    }
-  }
-
-  out_norm = "pass=";
-  out_norm.push_back(pass);
-  out_norm += ";source_addr=";
-  out_norm += std::to_string(static_cast<unsigned long>(source_addr));
-  out_norm += ";channel_mask=";
-  out_norm += std::to_string(static_cast<unsigned long>(channel_mask));
-  return true;
-}
-
-std::string normalizeProvisionStatusValue(const std::string& value) {
-  const std::string trimmed = trimAscii(value);
-  return trimmed.empty() ? std::string("status=1") : trimmed;
 }
 
 bool enumContains(const char* enum_values, const std::string& value) {
@@ -515,7 +391,6 @@ bool SemuAppDescriptorProvider::getCapabilities(std::vector<espnow_link::Capabil
   out.push_back({"topology", "Topology relay-target map and commit state"});
   out.push_back({"childset", "Per-child settings key format: v{0..7}.<sens_field>"});
   out.push_back({"childmet", "Per-child telemetry key format: v{0..7}.<sens_metric>"});
-  out.push_back({"lprov", "Lidar provisioning commands via sset: lidar.provision.semu, lidar.provision.status"});
   return true;
 }
 
@@ -686,18 +561,6 @@ bool SemuAppDescriptorProvider::getSettingById(uint16_t setting_id, espnow_link:
 }
 
 bool SemuAppDescriptorProvider::setSetting(const std::string& key, const std::string& value, std::string& out_message) {
-  if (key == PCAT_SEMU_SET_LPRSEMU) {
-    std::string normalized{};
-    if (!normalizeSemuProvisionValue(value, normalized, out_message)) {
-      return false;
-    }
-    return finalizeSettingChange_(key, normalized, true, out_message);
-  }
-  if (key == PCAT_SEMU_SET_LPRSTA) {
-    const std::string normalized = normalizeProvisionStatusValue(value);
-    return finalizeSettingChange_(key, normalized, true, out_message);
-  }
-
   const SettingDef* def = nullptr;
   for (const auto& s : kSettingDefs) {
     if (key == s.key) {
@@ -1044,13 +907,27 @@ bool SemuAppDescriptorProvider::appendTelemetryFromRuntime_(std::vector<espnow_l
 
     int32_t tf_a = pair_valid ? snap.tfl_a_mm[vid] : 0;
     int32_t tf_b = pair_valid ? snap.tfl_b_mm[vid] : 0;
+    int32_t flux_a = pair_valid ? snap.tfl_a_flux[vid] : 0;
+    int32_t flux_b = pair_valid ? snap.tfl_b_flux[vid] : 0;
+    int32_t temp_a_x100 = pair_valid ? snap.tfl_a_temp_c_x100[vid] : 0;
+    int32_t temp_b_x100 = pair_valid ? snap.tfl_b_temp_c_x100[vid] : 0;
     if (tf_a < -32768) tf_a = -32768;
     if (tf_a > 32767) tf_a = 32767;
     if (tf_b < -32768) tf_b = -32768;
     if (tf_b > 32767) tf_b = 32767;
+    if (flux_a < 0) flux_a = 0;
+    if (flux_a > 65535) flux_a = 65535;
+    if (flux_b < 0) flux_b = 0;
+    if (flux_b > 65535) flux_b = 65535;
+    const float temp_a_c = static_cast<float>(temp_a_x100) / 100.0f;
+    const float temp_b_c = static_cast<float>(temp_b_x100) / 100.0f;
 
     out.push_back(makeSample(buildChildTelemetryId(vid, 1U), buildChildScopedKey(vid, "tfl_a_mm").c_str(), std::to_string(tf_a), "mm"));
     out.push_back(makeSample(buildChildTelemetryId(vid, 2U), buildChildScopedKey(vid, "tfl_b_mm").c_str(), std::to_string(tf_b), "mm"));
+    out.push_back(makeSample(buildChildTelemetryId(vid, 3U), buildChildScopedKey(vid, "tfl_a_flux").c_str(), std::to_string(flux_a), "count"));
+    out.push_back(makeSample(buildChildTelemetryId(vid, 4U), buildChildScopedKey(vid, "tfl_b_flux").c_str(), std::to_string(flux_b), "count"));
+    out.push_back(makeSample(buildChildTelemetryId(vid, 5U), buildChildScopedKey(vid, "tfl_a_temp_c").c_str(), formatFloat_(temp_a_c), "C"));
+    out.push_back(makeSample(buildChildTelemetryId(vid, 6U), buildChildScopedKey(vid, "tfl_b_temp_c").c_str(), formatFloat_(temp_b_c), "C"));
   }
   return true;
 }

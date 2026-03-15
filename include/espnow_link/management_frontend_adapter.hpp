@@ -212,20 +212,6 @@ class ManagementFrontendAdapter {
     std::vector<uint8_t> result_payload{};
   };
 
-  /** @brief Normalized provisioning result projection for `lidar.provision.*` flows. */
-  struct LidarProvisionResultView {
-    bool accepted = false;
-    bool terminal = false;
-    bool from_event = false;
-    uint16_t cmd_id = 0U;
-    CommandState command_state = CommandState::Fail;
-    OperationState operation_state = OperationState::Failed;
-    ManagementStatus status_code = ManagementStatus::InternalError;
-    std::string state{};         // queued|running|succeeded|failed|timeout|canceled
-    std::string result_token{};  // parsed `"result"` token from JSON payload when present
-    std::string message{};       // decoded string payload or synthesized message
-  };
-
   /** @brief One key/value item for batch settings mutation. */
   struct SettingsBatchItem {
     std::string key{};
@@ -305,6 +291,8 @@ class ManagementFrontendAdapter {
   /** @brief Options for one-shot telemetry-now pull. */
   struct TelemetryNowOptions {
     uint32_t timeout_ms = 0U;
+    bool fetch_all_pages = true;
+    uint8_t page_size = 6U;
   };
 
   /** @brief Read model for one peer one-shot telemetry pull. */
@@ -1441,24 +1429,110 @@ class ManagementFrontendAdapter {
     submit_options.timeout_ms = options.timeout_ms;
     submit_options.has_target_peer = true;
     submit_options.target_peer = peer;
-    out_view.ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::TelemPull),
-                                    {},
-                                    out_view.run,
-                                    submit_options);
-    if (!out_view.run.has_response) {
-      return false;
+    auto decodeSnapshot = [](const CommandRunResult& run,
+                             DescriptorResponse& out_desc) -> bool {
+      if (!run.has_response) {
+        return false;
+      }
+      if (!decodeDescriptorResponse(run.response.payload.data(),
+                                    run.response.payload.size(),
+                                    out_desc)) {
+        return false;
+      }
+      return out_desc.type == DescriptorResponseType::TelemetrySnapshot;
+    };
+
+    const uint8_t requested_page_size =
+        static_cast<uint8_t>((options.page_size == 0U) ? 6U : std::min<uint8_t>(options.page_size, 16U));
+    if (!options.fetch_all_pages) {
+      out_view.ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::TelemPull),
+                                      {},
+                                      out_view.run,
+                                      submit_options);
+      DescriptorResponse desc{};
+      if (!decodeSnapshot(out_view.run, desc)) {
+        out_view.ok = false;
+        return false;
+      }
+      out_view.samples = desc.telemetry_samples;
+      return out_view.ok;
     }
 
-    DescriptorResponse desc{};
-    if (!decodeDescriptorResponse(out_view.run.response.payload.data(),
-                                  out_view.run.response.payload.size(),
-                                  desc) ||
-        desc.type != DescriptorResponseType::TelemetrySnapshot) {
-      out_view.ok = false;
-      return false;
+    auto appendU16Le = [](std::vector<uint8_t>& out, uint16_t value) {
+      out.push_back(static_cast<uint8_t>(value & 0xFFU));
+      out.push_back(static_cast<uint8_t>((value >> 8) & 0xFFU));
+    };
+
+    uint16_t cursor = 0U;
+    bool final_ok = true;
+    std::vector<TelemetrySample> merged{};
+    for (size_t page_guard = 0; page_guard < 512U; ++page_guard) {
+      std::vector<uint8_t> payload{};
+      appendU16Le(payload, cursor);
+      payload.push_back(requested_page_size);
+
+      CommandRunResult page_run{};
+      const bool page_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::TelemPull),
+                                             payload,
+                                             page_run,
+                                             submit_options);
+      final_ok = final_ok && page_ok;
+      if (page_guard == 0U) {
+        out_view.run = page_run;
+      }
+
+      DescriptorResponse desc{};
+      if (!decodeSnapshot(page_run, desc)) {
+        out_view.ok = false;
+        return false;
+      }
+
+      if (!desc.is_paged) {
+        // Compatibility path for nodes that do not page telemetry snapshots yet.
+        out_view.samples = desc.telemetry_samples;
+        out_view.ok = final_ok;
+        return out_view.ok;
+      }
+
+      // Live snapshots may legitimately change between pages (e.g. uptime ticks).
+      // Merge by metric identity instead of enforcing a fixed snapshot id.
+
+      for (const auto& sample : desc.telemetry_samples) {
+        bool exists = false;
+        if (sample.metric_id != 0U) {
+          for (const auto& cur : merged) {
+            if (cur.metric_id == sample.metric_id) {
+              exists = true;
+              break;
+            }
+          }
+        } else {
+          for (const auto& cur : merged) {
+            if (cur.key == sample.key) {
+              exists = true;
+              break;
+            }
+          }
+        }
+        if (!exists) {
+          merged.push_back(sample);
+        }
+      }
+
+      if (desc.done) {
+        out_view.samples = std::move(merged);
+        out_view.ok = final_ok;
+        return out_view.ok;
+      }
+      if (desc.next_cursor <= desc.cursor) {
+        out_view.ok = false;
+        return false;
+      }
+      cursor = desc.next_cursor;
     }
-    out_view.samples = desc.telemetry_samples;
-    return out_view.ok;
+
+    out_view.ok = false;
+    return false;
   }
 
   bool telemetryNowGet(const MacAddress& peer,
@@ -1666,220 +1740,6 @@ class ManagementFrontendAdapter {
   }
 
   /**
-   * @brief Submit SENS lidar provisioning command (`lidar.provision.sens`).
-   *
-   * Payload format: `slot=A|B,source_addr=<u8>`.
-   */
-  bool lidarProvisionSensSet(const MacAddress& peer,
-                             char slot,
-                             uint8_t source_addr = 0x10U,
-                             uint32_t* out_req_id = nullptr,
-                             uint32_t timeout_ms = 0) {
-    char normalized = '\0';
-    if (!normalizeLidarSlot_(slot, normalized)) {
-      if (out_req_id != nullptr) *out_req_id = 0U;
-      return false;
-    }
-    return submitTargetedCommand_(peer,
-                                  ManagementCommandId::SettingSet,
-                                  management_utils::buildSettingSetByKeyPayload(
-                                      "lidar.provision.sens",
-                                      buildLidarProvisionSensValue_(normalized, source_addr)),
-                                  out_req_id,
-                                  timeout_ms);
-  }
-
-  /**
-   * @brief Submit SEMU lidar provisioning command (`lidar.provision.semu`).
-   *
-   * Payload format: `pass=A|B,source_addr=<u8>[,channel_mask=<u32>]`.
-   */
-  bool lidarProvisionSemuSet(const MacAddress& peer,
-                             char pass,
-                             uint8_t source_addr = 0x10U,
-                             uint32_t channel_mask = 0U,
-                             uint32_t* out_req_id = nullptr,
-                             uint32_t timeout_ms = 0) {
-    char normalized = '\0';
-    if (!normalizeLidarPass_(pass, normalized)) {
-      if (out_req_id != nullptr) *out_req_id = 0U;
-      return false;
-    }
-    return submitTargetedCommand_(peer,
-                                  ManagementCommandId::SettingSet,
-                                  management_utils::buildSettingSetByKeyPayload(
-                                      "lidar.provision.semu",
-                                      buildLidarProvisionSemuValue_(normalized, source_addr, channel_mask)),
-                                  out_req_id,
-                                  timeout_ms);
-  }
-
-  /**
-   * @brief Query last lidar provisioning status report (`lidar.provision.status`).
-   *
-   * This is implemented as `SettingSet` by profile bridge.
-   */
-  bool lidarProvisionStatusGet(const MacAddress& peer,
-                               uint32_t* out_req_id = nullptr,
-                               uint32_t timeout_ms = 0) {
-    return submitTargetedCommand_(peer,
-                                  ManagementCommandId::SettingSet,
-                                  management_utils::buildSettingSetByKeyPayload(
-                                      "lidar.provision.status",
-                                      buildLidarProvisionStatusValue_()),
-                                  out_req_id,
-                                  timeout_ms);
-  }
-
-  /** @brief Submit tracked SENS provisioning operation (`SettingSet` + polling). */
-  bool lidarProvisionSensTracked(const MacAddress& peer,
-                                 char slot,
-                                 OperationHandle& out_handle,
-                                 uint8_t source_addr = 0x10U,
-                                 uint32_t timeout_ms = 0) {
-    char normalized = '\0';
-    if (!normalizeLidarSlot_(slot, normalized)) {
-      out_handle = OperationHandle{};
-      return false;
-    }
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-    return operationSubmit(static_cast<uint16_t>(ManagementCommandId::SettingSet),
-                           management_utils::buildSettingSetByKeyPayload(
-                               "lidar.provision.sens",
-                               buildLidarProvisionSensValue_(normalized, source_addr)),
-                           out_handle,
-                           submit_options);
-  }
-
-  /** @brief Submit tracked SEMU provisioning operation (`SettingSet` + polling). */
-  bool lidarProvisionSemuTracked(const MacAddress& peer,
-                                 char pass,
-                                 OperationHandle& out_handle,
-                                 uint8_t source_addr = 0x10U,
-                                 uint32_t channel_mask = 0U,
-                                 uint32_t timeout_ms = 0) {
-    char normalized = '\0';
-    if (!normalizeLidarPass_(pass, normalized)) {
-      out_handle = OperationHandle{};
-      return false;
-    }
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-    return operationSubmit(static_cast<uint16_t>(ManagementCommandId::SettingSet),
-                           management_utils::buildSettingSetByKeyPayload(
-                               "lidar.provision.semu",
-                               buildLidarProvisionSemuValue_(normalized, source_addr, channel_mask)),
-                           out_handle,
-                           submit_options);
-  }
-
-  /** @brief Submit tracked provisioning status query (`SettingSet` + polling). */
-  bool lidarProvisionStatusTracked(const MacAddress& peer,
-                                   OperationHandle& out_handle,
-                                   uint32_t timeout_ms = 0) {
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-    return operationSubmit(static_cast<uint16_t>(ManagementCommandId::SettingSet),
-                           management_utils::buildSettingSetByKeyPayload(
-                               "lidar.provision.status",
-                               buildLidarProvisionStatusValue_()),
-                           out_handle,
-                           submit_options);
-  }
-
-  /** @brief Blocking helper for SENS provisioning command execution. */
-  bool lidarProvisionSensRun(const MacAddress& peer,
-                             char slot,
-                             CommandRunResult& out_result,
-                             uint8_t source_addr = 0x10U,
-                             uint32_t timeout_ms = 0,
-                             uint32_t req_id = 0U) {
-    char normalized = '\0';
-    if (!normalizeLidarSlot_(slot, normalized)) {
-      out_result = CommandRunResult{};
-      out_result.cmd_id = static_cast<uint16_t>(ManagementCommandId::SettingSet);
-      out_result.status = ManagementStatus::BadPayload;
-      out_result.terminal_state = CommandState::Fail;
-      out_result.has_error = true;
-      out_result.error.code = static_cast<uint16_t>(ManagementStatus::BadPayload);
-      out_result.error.stage = "submit";
-      out_result.error.message = "invalid slot";
-      out_result.error.retryable = false;
-      return false;
-    }
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.req_id = req_id;
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-    return commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingSet),
-                             management_utils::buildSettingSetByKeyPayload(
-                                 "lidar.provision.sens",
-                                 buildLidarProvisionSensValue_(normalized, source_addr)),
-                             out_result,
-                             submit_options);
-  }
-
-  /** @brief Blocking helper for SEMU provisioning command execution. */
-  bool lidarProvisionSemuRun(const MacAddress& peer,
-                             char pass,
-                             CommandRunResult& out_result,
-                             uint8_t source_addr = 0x10U,
-                             uint32_t channel_mask = 0U,
-                             uint32_t timeout_ms = 0,
-                             uint32_t req_id = 0U) {
-    char normalized = '\0';
-    if (!normalizeLidarPass_(pass, normalized)) {
-      out_result = CommandRunResult{};
-      out_result.cmd_id = static_cast<uint16_t>(ManagementCommandId::SettingSet);
-      out_result.status = ManagementStatus::BadPayload;
-      out_result.terminal_state = CommandState::Fail;
-      out_result.has_error = true;
-      out_result.error.code = static_cast<uint16_t>(ManagementStatus::BadPayload);
-      out_result.error.stage = "submit";
-      out_result.error.message = "invalid pass";
-      out_result.error.retryable = false;
-      return false;
-    }
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.req_id = req_id;
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-    return commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingSet),
-                             management_utils::buildSettingSetByKeyPayload(
-                                 "lidar.provision.semu",
-                                 buildLidarProvisionSemuValue_(normalized, source_addr, channel_mask)),
-                             out_result,
-                             submit_options);
-  }
-
-  /** @brief Blocking helper for provisioning status query command execution. */
-  bool lidarProvisionStatusRun(const MacAddress& peer,
-                               CommandRunResult& out_result,
-                               uint32_t timeout_ms = 0,
-                               uint32_t req_id = 0U) {
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.req_id = req_id;
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-    return commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingSet),
-                             management_utils::buildSettingSetByKeyPayload(
-                                 "lidar.provision.status",
-                                 buildLidarProvisionStatusValue_()),
-                             out_result,
-                             submit_options);
-  }
-
-  /**
    * @brief Explicit-target relay output control (`relay1_enable`/`relay2_enable`).
    *
    * @param relay_index Relay output index in [1..2].
@@ -1893,6 +1753,27 @@ class ManagementFrontendAdapter {
       return false;
     }
     const char* key = (relay_index == 1U) ? "relay1_enable" : "relay2_enable";
+    return submitTargetedCommand_(peer,
+                                  ManagementCommandId::SettingSet,
+                                  management_utils::buildSettingSetByKeyPayload(key, enabled ? "1" : "0"),
+                                  out_req_id,
+                                  timeout_ms);
+  }
+
+  /**
+   * @brief Explicit-target REMU child output control (`v<idx>.output_enable`).
+   *
+   * @param child_index REMU child index in [0..15].
+   */
+  bool remuOutputSet(const MacAddress& peer,
+                     uint8_t child_index,
+                     bool enabled,
+                     uint32_t* out_req_id = nullptr,
+                     uint32_t timeout_ms = 0) {
+    if (child_index > 15U) {
+      return false;
+    }
+    const std::string key = std::string("v") + std::to_string(static_cast<unsigned int>(child_index)) + ".output_enable";
     return submitTargetedCommand_(peer,
                                   ManagementCommandId::SettingSet,
                                   management_utils::buildSettingSetByKeyPayload(key, enabled ? "1" : "0"),
@@ -3082,66 +2963,6 @@ class ManagementFrontendAdapter {
     return management_utils::parseStringPayloadU16(event.payload, out_message);
   }
 
-  /** @brief Build normalized provisioning result projection from blocking run result. */
-  static bool extractLidarProvisionResult(const CommandRunResult& run, LidarProvisionResultView& out_view) {
-    if (!isSettingSetLike_(run)) {
-      return false;
-    }
-    out_view = LidarProvisionResultView{};
-    out_view.accepted = run.accepted;
-    out_view.terminal = true;
-    out_view.from_event = run.has_event;
-    out_view.cmd_id = static_cast<uint16_t>(ManagementCommandId::SettingSet);
-    out_view.command_state = run.terminal_state;
-    out_view.operation_state = toOperationState_(run.terminal_state);
-    out_view.status_code = run.status;
-    out_view.state = operationStateToString_(out_view.operation_state);
-
-    std::string payload_message{};
-    if (run.has_event && decodeSettingSetTextEvent(run.event, payload_message)) {
-      out_view.message = payload_message;
-    } else if (run.has_response && decodeSettingSetTextResponse(run.response, payload_message)) {
-      out_view.message = payload_message;
-    } else if (run.has_error) {
-      out_view.message = run.error.message;
-    } else {
-      out_view.message = management_utils::managementStatusToString(run.status);
-    }
-
-    parseProvisionResultToken_(out_view.message, out_view.result_token);
-    return true;
-  }
-
-  /** @brief Build normalized provisioning result projection from operation polling status. */
-  static bool extractLidarProvisionResult(const OperationStatus& status, LidarProvisionResultView& out_view) {
-    if (status.cmd_id != static_cast<uint16_t>(ManagementCommandId::SettingSet)) {
-      return false;
-    }
-    out_view = LidarProvisionResultView{};
-    out_view.accepted = true;
-    out_view.terminal = status.terminal;
-    out_view.from_event = status.result_from_event;
-    out_view.cmd_id = status.cmd_id;
-    out_view.command_state = toCommandState_(status.state);
-    out_view.operation_state = status.state;
-    out_view.status_code = status.status_code;
-    out_view.state = operationStateToString_(status.state);
-
-    std::string payload_message{};
-    if (management_utils::parseStringPayloadU16(status.result_payload, payload_message)) {
-      out_view.message = payload_message;
-    } else if (status.has_error) {
-      out_view.message = status.error.message;
-    } else if (!status.message.empty()) {
-      out_view.message = status.message;
-    } else {
-      out_view.message = management_utils::managementStatusToString(status.status_code);
-    }
-
-    parseProvisionResultToken_(out_view.message, out_view.result_token);
-    return true;
-  }
-
   /** @brief Decode paired snapshot response payload (`PairedSnapshotGet`). */
   static bool decodePairedSnapshotResponse(const ManagementResponse& response,
                                            std::vector<MacAddress>& out_peers) {
@@ -3396,6 +3217,33 @@ class ManagementFrontendAdapter {
     if (!resolveTargetSelector(selector, paired_list, peer, out_index)) return false;
     if (out_peer != nullptr) *out_peer = peer;
     const char* key = (relay_index == 1U) ? "relay1_enable" : "relay2_enable";
+    return submitTargetedCommand_(peer,
+                                  ManagementCommandId::SettingSet,
+                                  management_utils::buildSettingSetByKeyPayload(key, enabled ? "1" : "0"),
+                                  out_req_id,
+                                  timeout_ms);
+  }
+
+  /**
+   * @brief Resolve target selector and set REMU child output state.
+   *
+   * @param child_index REMU child index in [0..15].
+   */
+  bool targetRemuOutputSet(const std::string& selector,
+                           const std::vector<MacAddress>& paired_list,
+                           uint8_t child_index,
+                           bool enabled,
+                           uint32_t* out_req_id = nullptr,
+                           uint32_t timeout_ms = 0,
+                           MacAddress* out_peer = nullptr,
+                           size_t* out_index = nullptr) {
+    if (child_index > 15U) {
+      return false;
+    }
+    MacAddress peer{};
+    if (!resolveTargetSelector(selector, paired_list, peer, out_index)) return false;
+    if (out_peer != nullptr) *out_peer = peer;
+    const std::string key = std::string("v") + std::to_string(static_cast<unsigned int>(child_index)) + ".output_enable";
     return submitTargetedCommand_(peer,
                                   ManagementCommandId::SettingSet,
                                   management_utils::buildSettingSetByKeyPayload(key, enabled ? "1" : "0"),
@@ -3821,67 +3669,6 @@ class ManagementFrontendAdapter {
       out = false;
       return true;
     }
-    return false;
-  }
-
-  static bool normalizeLidarSlot_(char in, char& out) {
-    char slot = in;
-    if (slot >= 'a' && slot <= 'z') {
-      slot = static_cast<char>(slot - ('a' - 'A'));
-    }
-    if (slot != 'A' && slot != 'B') {
-      return false;
-    }
-    out = slot;
-    return true;
-  }
-
-  static bool normalizeLidarPass_(char in, char& out) {
-    return normalizeLidarSlot_(in, out);
-  }
-
-  static std::string buildLidarProvisionSensValue_(char slot, uint8_t source_addr) {
-    std::string value = "slot=";
-    value.push_back(slot);
-    value += ",source_addr=";
-    value += std::to_string(static_cast<unsigned int>(source_addr));
-    return value;
-  }
-
-  static std::string buildLidarProvisionSemuValue_(char pass, uint8_t source_addr, uint32_t channel_mask) {
-    std::string value = "pass=";
-    value.push_back(pass);
-    value += ",source_addr=";
-    value += std::to_string(static_cast<unsigned int>(source_addr));
-    if (channel_mask != 0U) {
-      value += ",channel_mask=";
-      value += std::to_string(static_cast<unsigned long>(channel_mask));
-    }
-    return value;
-  }
-
-  static std::string buildLidarProvisionStatusValue_() {
-    return "status=1";
-  }
-
-  static bool parseProvisionResultToken_(const std::string& message, std::string& out_token) {
-    out_token.clear();
-    if (message.empty()) return false;
-    const std::string needle = "\"result\":\"";
-    const size_t pos = message.find(needle);
-    if (pos == std::string::npos) return false;
-    const size_t begin = pos + needle.size();
-    const size_t end = message.find('"', begin);
-    if (end == std::string::npos || end <= begin) return false;
-    out_token = message.substr(begin, end - begin);
-    return true;
-  }
-
-  static bool isSettingSetLike_(const CommandRunResult& run) {
-    const uint16_t set_cmd = static_cast<uint16_t>(ManagementCommandId::SettingSet);
-    if (run.cmd_id == set_cmd) return true;
-    if (run.has_response && run.response.cmd_id == set_cmd) return true;
-    if (run.has_event && run.event.cmd_id == set_cmd) return true;
     return false;
   }
 

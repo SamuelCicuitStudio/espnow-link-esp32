@@ -21,6 +21,10 @@ namespace app_owned {
 struct SensRuntimeTelemetrySnapshot {
   int32_t tfl_a_mm = 0;
   int32_t tfl_b_mm = 0;
+  int32_t tfl_a_flux = 0;
+  int32_t tfl_b_flux = 0;
+  int32_t tfl_a_temp_c_x100 = 0;
+  int32_t tfl_b_temp_c_x100 = 0;
   float env_temp_c = 0.0f;
   float env_hum_pct = 0.0f;
   float env_press_pa = 0.0f;

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 
 namespace espnow_link {
 namespace {
@@ -171,6 +172,7 @@ bool readU16(const uint8_t* v, uint16_t len, uint16_t& out) {
 bool supportsPaging(DescriptorQueryType type) {
   return type == DescriptorQueryType::GetCapabilities ||
          type == DescriptorQueryType::GetTelemetry ||
+         type == DescriptorQueryType::PullTelemetry ||
          type == DescriptorQueryType::GetSettings ||
          type == DescriptorQueryType::GetOtaManifest;
 }
@@ -262,6 +264,19 @@ uint32_t snapshotTelemetry(const std::vector<TelemetryDescriptor>& list, const s
     fnv1aMixStr(h, item.key);
     fnv1aMixStr(h, item.unit);
     fnv1aMixStr(h, item.description);
+  }
+  return h;
+}
+
+uint32_t snapshotTelemetrySamples(const std::vector<TelemetrySample>& list, const std::string& message) {
+  uint32_t h = fnv1aInit();
+  fnv1aMixByte(h, static_cast<uint8_t>(DescriptorResponseType::TelemetrySnapshot));
+  fnv1aMixStr(h, message);
+  for (const auto& item : list) {
+    fnv1aMixU16(h, item.metric_id);
+    fnv1aMixStr(h, item.key);
+    fnv1aMixStr(h, item.value);
+    fnv1aMixStr(h, item.unit);
   }
   return h;
 }
@@ -822,6 +837,22 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
         }
       }
 
+      const uint16_t page_size = effectivePageSize(query);
+      if (page_size > 0U) {
+        const std::vector<TelemetrySample> full_samples = out.telemetry_samples;
+        const size_t total = full_samples.size();
+        const size_t start = std::min<size_t>(query.cursor, total);
+        const size_t end = std::min<size_t>(total, start + page_size);
+        out.telemetry_samples.assign(full_samples.begin() + static_cast<std::ptrdiff_t>(start),
+                                     full_samples.begin() + static_cast<std::ptrdiff_t>(end));
+        for (auto& s : out.telemetry_samples) {
+          s.key = clipForPage(s.key, 32);
+          s.value = clipForPage(s.value, 32);
+          s.unit = clipForPage(s.unit, 8);
+        }
+        finalizePageMeta(query, total, end - start, snapshotTelemetrySamples(full_samples, out.message), out);
+      }
+
       out.type = DescriptorResponseType::TelemetrySnapshot;
       out.message.clear();
       return true;
@@ -848,17 +879,62 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
       if (profile != nullptr) {
         full_settings = descriptor_cache::settingsSchemaForProfile(profile);
         bool have_provider_settings = false;
+        std::vector<SettingDescriptor> provider_settings;
+        const bool have_provider_bulk = provider.getSettings(provider_settings);
 
-        for (auto& st : full_settings) {
-          const uint16_t schema_setting_id = st.setting_id;
-          const std::string schema_setting_key = st.key;
-          SettingDescriptor resolved{};
-          if (provider.getSettingById(schema_setting_id, resolved)) {
-            st = resolved;
-            have_provider_settings = true;
+        if (have_provider_bulk) {
+          std::unordered_map<uint16_t, const SettingDescriptor*> by_id{};
+          std::unordered_map<std::string, const SettingDescriptor*> by_key{};
+          by_id.reserve(provider_settings.size());
+          by_key.reserve(provider_settings.size());
+
+          for (const auto& s : provider_settings) {
+            if (s.setting_id != 0U) {
+              by_id.emplace(s.setting_id, &s);
+            }
+            if (!s.key.empty()) {
+              by_key.emplace(s.key, &s);
+            }
           }
-          st.setting_id = schema_setting_id;
-          st.key = schema_setting_key;
+
+          for (auto& st : full_settings) {
+            const uint16_t schema_setting_id = st.setting_id;
+            const std::string schema_setting_key = st.key;
+            const SettingDescriptor* resolved = nullptr;
+
+            if (schema_setting_id != 0U) {
+              auto it = by_id.find(schema_setting_id);
+              if (it != by_id.end()) {
+                resolved = it->second;
+              }
+            }
+            if (resolved == nullptr && !schema_setting_key.empty()) {
+              auto it = by_key.find(schema_setting_key);
+              if (it != by_key.end()) {
+                resolved = it->second;
+              }
+            }
+            if (resolved != nullptr) {
+              st = *resolved;
+              have_provider_settings = true;
+            }
+
+            st.setting_id = schema_setting_id;
+            st.key = schema_setting_key;
+          }
+        } else {
+          // Compatibility fallback for providers that only implement point lookups.
+          for (auto& st : full_settings) {
+            const uint16_t schema_setting_id = st.setting_id;
+            const std::string schema_setting_key = st.key;
+            SettingDescriptor resolved{};
+            if (provider.getSettingById(schema_setting_id, resolved)) {
+              st = resolved;
+              have_provider_settings = true;
+            }
+            st.setting_id = schema_setting_id;
+            st.key = schema_setting_key;
+          }
         }
 
         out.type = full_settings.empty() ? DescriptorResponseType::Error : DescriptorResponseType::Settings;
@@ -1363,6 +1439,7 @@ bool encodeDescriptorResponse(const DescriptorResponse& response, std::string& o
           !appendUtf8(out, 0x50, t.key) || !appendUtf8(out, 0x51, t.value) || !appendUtf8(out, 0x52, t.unit)) {
         return false;
       }
+      ++paged_emitted_count;
     }
   } else if (response.type == DescriptorResponseType::Liveness) {
     if (!tryAppendBool(0x60, response.liveness.online) || !tryAppendU32(0x61, response.liveness.uptime_ms) ||
@@ -1524,6 +1601,7 @@ bool encodeDescriptorResponse(const DescriptorResponse& response, std::string& o
   if (response.is_paged) {
     if (response.type == DescriptorResponseType::Capabilities ||
         response.type == DescriptorResponseType::Telemetry ||
+        response.type == DescriptorResponseType::TelemetrySnapshot ||
         response.type == DescriptorResponseType::Settings ||
         response.type == DescriptorResponseType::OtaManifest) {
       if (paged_emitted_count != response.returned_count) {

@@ -17,13 +17,15 @@
 #define PCAT_SENS_KEY_NEXT "nxtmac"  // Next neighbor MAC.
 #define PCAT_SENS_KEY_POSR "posrl"   // Positive-direction relay targets (JSON).
 #define PCAT_SENS_KEY_NEGR "negrl"   // Negative-direction relay targets (JSON).
-#define PCAT_SENS_KEY_TFNR "tfnmm"   // TFL near threshold (mm).
-#define PCAT_SENS_KEY_TFFR "tffmm"   // TFL far threshold (mm).
+#define PCAT_SENS_KEY_TFNR "tfnmm"   // Detection falling delta (cm).
+#define PCAT_SENS_KEY_TFFR "tffmm"   // Detection release delta (cm).
 #define PCAT_SENS_KEY_ABSP "abspc"   // A/B spacing baseline (mm).
+#define PCAT_SENS_KEY_CALA "calamm"  // TFLuna-A calibrated baseline distance (mm).
+#define PCAT_SENS_KEY_CALB "calbmm"  // TFLuna-B calibrated baseline distance (mm).
 #define PCAT_SENS_KEY_ALS0 "als0"    // ALS lower threshold (lux).
 #define PCAT_SENS_KEY_ALS1 "als1"    // ALS upper threshold (lux).
-#define PCAT_SENS_KEY_CFM "cfmms"    // Confirm debounce time (ms).
-#define PCAT_SENS_KEY_STP "stopms"   // Stop/clear timeout (ms).
+#define PCAT_SENS_KEY_CFM "cfmms"    // Detection A/B edge window (ms).
+#define PCAT_SENS_KEY_STP "stopms"   // Detection clear hold (ms).
 #define PCAT_SENS_KEY_RON "ronms"    // Relay ON duration (ms).
 #define PCAT_SENS_KEY_ROF "rofms"    // Relay OFF duration (ms).
 #define PCAT_SENS_KEY_LCNT "lcnt"    // Lead pulse count.
@@ -49,8 +51,6 @@
 #define PCAT_SENS_KEY_TOPST "topst"  // Topology state (staged/committed).
 #define PCAT_SENS_KEY_TOPR "toprtg"  // Serialized topology relay-target map.
 #define PCAT_SENS_KEY_TOPC "topcmt"  // Topology commit epoch (s).
-#define PCAT_SENS_KEY_LPRQ "lprq"    // Last lidar provisioning request payload.
-#define PCAT_SENS_KEY_LPRS "lprs"    // Last lidar provisioning status token.
 
 // Public setting keys.
 #define PCAT_SENS_SET_DNAME "device_name"
@@ -59,13 +59,15 @@
 #define PCAT_SENS_SET_NEXT "next_mac"
 #define PCAT_SENS_SET_POSR "pos_relays"
 #define PCAT_SENS_SET_NEGR "neg_relays"
-#define PCAT_SENS_SET_TFNR "tf_near_mm"
-#define PCAT_SENS_SET_TFFR "tf_far_mm"
+#define PCAT_SENS_SET_TFNR "detect_fall_delta_cm"
+#define PCAT_SENS_SET_TFFR "detect_release_delta_cm"
 #define PCAT_SENS_SET_ABSP "ab_spacing_mm"
+#define PCAT_SENS_SET_CALA "tfl_a_calib_mm"
+#define PCAT_SENS_SET_CALB "tfl_b_calib_mm"
 #define PCAT_SENS_SET_ALS0 "als_t0_lux"
 #define PCAT_SENS_SET_ALS1 "als_t1_lux"
-#define PCAT_SENS_SET_CFM "confirm_ms"
-#define PCAT_SENS_SET_STP "stop_ms"
+#define PCAT_SENS_SET_CFM "detect_window_ms"
+#define PCAT_SENS_SET_STP "detect_clear_hold_ms"
 #define PCAT_SENS_SET_RON "relay_on_ms"
 #define PCAT_SENS_SET_ROF "relay_off_ms"
 #define PCAT_SENS_SET_LCNT "lead_count"
@@ -91,12 +93,18 @@
 #define PCAT_SENS_SET_TOPST "topo_state"
 #define PCAT_SENS_SET_TOPR "topo_relay_targets_blob"
 #define PCAT_SENS_SET_TOPC "topo_commit_epoch_s"
+// Legacy alias retained for transition; strict SENS profile does not expose/accept it.
 #define PCAT_SENS_SET_LPRSENS "lidar.provision.sens"
+// Legacy alias retained for transition; strict SENS profile does not expose/accept it.
 #define PCAT_SENS_SET_LPRSTA "lidar.provision.status"
 
 // Telemetry keys.
 #define PCAT_SENS_MET_TFLA "tfl_a_mm"
 #define PCAT_SENS_MET_TFLB "tfl_b_mm"
+#define PCAT_SENS_MET_TFLAF "tfl_a_flux"
+#define PCAT_SENS_MET_TFLBF "tfl_b_flux"
+#define PCAT_SENS_MET_TFLAT "tfl_a_temp_c"
+#define PCAT_SENS_MET_TFLBT "tfl_b_temp_c"
 #define PCAT_SENS_MET_TEMP "env_temp_c"
 #define PCAT_SENS_MET_HUM "env_hum_pct"
 #define PCAT_SENS_MET_PRES "env_press_pa"
@@ -115,6 +123,12 @@
 #define PCAT_SENS_SET_ABSP_DEF 350U
 #define PCAT_SENS_SET_ABSP_MIN 0U
 #define PCAT_SENS_SET_ABSP_MAX 65535U
+#define PCAT_SENS_SET_CALA_DEF 0U
+#define PCAT_SENS_SET_CALA_MIN 0U
+#define PCAT_SENS_SET_CALA_MAX 65535U
+#define PCAT_SENS_SET_CALB_DEF 0U
+#define PCAT_SENS_SET_CALB_MIN 0U
+#define PCAT_SENS_SET_CALB_MAX 65535U
 #define PCAT_SENS_SET_ALS0_DEF 180U
 #define PCAT_SENS_SET_ALS0_MIN 1U
 #define PCAT_SENS_SET_ALS0_MAX 65535U
@@ -173,12 +187,10 @@
 #define PCAT_SENS_SET_PSHS_DEF "all"
 #define PCAT_SENS_SET_TOPV_DEF 0U
 #define PCAT_SENS_SET_TOPC_DEF 0U
-#define PCAT_SENS_SET_LPRSENS_DEF "slot=A,source_addr=16"
-#define PCAT_SENS_SET_LPRSTA_DEF "status=1"
 
 // Key maps used in capabilities.
-#define PCAT_SENS_SETMAP "device_name,channel,prev_mac,next_mac,pos_relays,neg_relays,tf_near_mm,tf_far_mm,ab_spacing_mm,als_t0_lux,als_t1_lux,confirm_ms,stop_ms,relay_on_ms,relay_off_ms,lead_count,lead_step_ms,tfl_a_addr,tfl_b_addr,tfl_fps,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s,lidar.provision.sens,lidar.provision.status"
-#define PCAT_SENS_METMAP "tfl_a_mm,tfl_b_mm,env_temp_c,env_hum_pct,env_press_pa,lux"
+#define PCAT_SENS_SETMAP "device_name,channel,prev_mac,next_mac,pos_relays,neg_relays,detect_fall_delta_cm,detect_release_delta_cm,ab_spacing_mm,tfl_a_calib_mm,tfl_b_calib_mm,als_t0_lux,als_t1_lux,detect_window_ms,detect_clear_hold_ms,relay_on_ms,relay_off_ms,lead_count,lead_step_ms,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s"
+#define PCAT_SENS_METMAP "tfl_a_mm,tfl_b_mm,tfl_a_flux,tfl_b_flux,tfl_a_temp_c,tfl_b_temp_c,env_temp_c,env_hum_pct,env_press_pa,lux"
 #define PCAT_SENS_EVMAP "trigger_sent,topology_applied,sensor_fault"
 
 // Compile-time NVS key policy checks.
@@ -191,6 +203,8 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_NEGR);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TFNR);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TFFR);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_ABSP);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_CALA);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_CALB);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_ALS0);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_ALS1);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_CFM);
@@ -220,5 +234,3 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TOPS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TOPST);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TOPR);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TOPC);
-PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_LPRQ);
-PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_LPRS);

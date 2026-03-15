@@ -28,6 +28,10 @@ struct SemuRuntimeTelemetrySnapshot {
   uint8_t valid_pair_mask = 0U;
   int32_t tfl_a_mm[kMaxPairs] = {0};
   int32_t tfl_b_mm[kMaxPairs] = {0};
+  int32_t tfl_a_flux[kMaxPairs] = {0};
+  int32_t tfl_b_flux[kMaxPairs] = {0};
+  int32_t tfl_a_temp_c_x100[kMaxPairs] = {0};
+  int32_t tfl_b_temp_c_x100[kMaxPairs] = {0};
   bool valid = false;
 };
 

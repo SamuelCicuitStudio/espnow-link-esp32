@@ -42,8 +42,6 @@
 #define PCAT_SEMU_KEY_TOPST "topst"  // Topology state (staged/committed).
 #define PCAT_SEMU_KEY_TOPR "toprtg"  // Serialized topology relay-target map.
 #define PCAT_SEMU_KEY_TOPC "topcmt"  // Topology commit epoch (s).
-#define PCAT_SEMU_KEY_LPRQ "lprq"    // Last lidar provisioning request payload.
-#define PCAT_SEMU_KEY_LPRS "lprs"    // Last lidar provisioning status token.
 
 // SEMU child-bank NVS key components (generated per child vid 0..7).
 // Full key format: "<prefix><hex_vid><code4>" => 6 chars total.
@@ -52,13 +50,15 @@
 #define PCAT_SEMU_CKEY_NEXT "nxtm"  // Per-child next neighbor MAC.
 #define PCAT_SEMU_CKEY_POSR "posr"  // Per-child positive relay targets (JSON).
 #define PCAT_SEMU_CKEY_NEGR "negr"  // Per-child negative relay targets (JSON).
-#define PCAT_SEMU_CKEY_TFNR "tfnr"  // Per-child TFL near threshold (mm).
-#define PCAT_SEMU_CKEY_TFFR "tffr"  // Per-child TFL far threshold (mm).
+#define PCAT_SEMU_CKEY_TFNR "tfnr"  // Per-child detection falling delta (cm).
+#define PCAT_SEMU_CKEY_TFFR "tffr"  // Per-child detection release delta (cm).
 #define PCAT_SEMU_CKEY_ABSP "absp"  // Per-child A/B spacing baseline (mm).
+#define PCAT_SEMU_CKEY_CALA "cala"  // Per-child TFLuna-A calibrated baseline distance (mm).
+#define PCAT_SEMU_CKEY_CALB "calb"  // Per-child TFLuna-B calibrated baseline distance (mm).
 #define PCAT_SEMU_CKEY_ALS0 "als0"  // Per-child ALS lower threshold (lux).
 #define PCAT_SEMU_CKEY_ALS1 "als1"  // Per-child ALS upper threshold (lux).
-#define PCAT_SEMU_CKEY_CFMS "cfms"  // Per-child confirm debounce (ms).
-#define PCAT_SEMU_CKEY_STMS "stms"  // Per-child stop/clear timeout (ms).
+#define PCAT_SEMU_CKEY_CFMS "cfms"  // Per-child detection A/B edge window (ms).
+#define PCAT_SEMU_CKEY_STMS "stms"  // Per-child detection clear hold (ms).
 #define PCAT_SEMU_CKEY_RONM "ronm"  // Per-child relay-on duration (ms).
 #define PCAT_SEMU_CKEY_ROFM "rofm"  // Per-child relay-off duration (ms).
 #define PCAT_SEMU_CKEY_LCNT "lcnt"  // Per-child lead pulse count.
@@ -99,7 +99,9 @@
 #define PCAT_SEMU_SET_TOPST "topo_state"
 #define PCAT_SEMU_SET_TOPR "topo_relay_targets_blob"
 #define PCAT_SEMU_SET_TOPC "topo_commit_epoch_s"
+// Legacy alias retained for transition; strict SEMU profile does not expose/accept it.
 #define PCAT_SEMU_SET_LPRSEMU "lidar.provision.semu"
+// Legacy alias retained for transition; strict SEMU profile does not expose/accept it.
 #define PCAT_SEMU_SET_LPRSTA "lidar.provision.status"
 
 // Telemetry keys.
@@ -131,6 +133,12 @@
 #define PCAT_SEMU_SET_ALS1_DEF 300U
 #define PCAT_SEMU_SET_ALS1_MIN 1U
 #define PCAT_SEMU_SET_ALS1_MAX 65535U
+#define PCAT_SEMU_SET_CALA_DEF 0U
+#define PCAT_SEMU_SET_CALA_MIN 0U
+#define PCAT_SEMU_SET_CALA_MAX 65535U
+#define PCAT_SEMU_SET_CALB_DEF 0U
+#define PCAT_SEMU_SET_CALB_MIN 0U
+#define PCAT_SEMU_SET_CALB_MAX 65535U
 #define PCAT_SEMU_SET_LOOPA_DEF 0
 #define PCAT_SEMU_SET_FANMD_DEF 0U
 #define PCAT_SEMU_SET_FANMD_MIN 0U
@@ -156,12 +164,10 @@
 #define PCAT_SEMU_SET_PSHS_DEF "all"
 #define PCAT_SEMU_SET_TOPV_DEF 0U
 #define PCAT_SEMU_SET_TOPC_DEF 0U
-#define PCAT_SEMU_SET_LPRSEMU_DEF "pass=A,source_addr=16,channel_mask=0"
-#define PCAT_SEMU_SET_LPRSTA_DEF "status=1"
 
 // Key maps used in capabilities.
-#define PCAT_SEMU_SETMAP "device_name,channel,sensor_count,prev_mac,next_mac,pos_relays,neg_relays,von_ms,vlead_count,vlead_ms,venv_enable,als_t0_lux,als_t1_lux,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s,lidar.provision.semu,lidar.provision.status"
-#define PCAT_SEMU_METMAP "env_temp_c,env_hum_pct,env_press_pa,lux"
+#define PCAT_SEMU_SETMAP "device_name,channel,sensor_count,prev_mac,next_mac,pos_relays,neg_relays,von_ms,vlead_count,vlead_ms,venv_enable,als_t0_lux,als_t1_lux,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s"
+#define PCAT_SEMU_METMAP "env_temp_c,env_hum_pct,env_press_pa,lux,v{0..7}.tfl_a_mm,v{0..7}.tfl_b_mm,v{0..7}.tfl_a_flux,v{0..7}.tfl_b_flux,v{0..7}.tfl_a_temp_c,v{0..7}.tfl_b_temp_c"
 #define PCAT_SEMU_EVMAP "trigger_sent,topology_applied,virtual_sensor_fault"
 
 #define PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(code_literal) \
@@ -198,8 +204,6 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_TOPS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_TOPST);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_TOPR);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_TOPC);
-PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_LPRQ);
-PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_LPRS);
 
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_PREV);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_NEXT);
@@ -208,6 +212,8 @@ PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_NEGR);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_TFNR);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_TFFR);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_ABSP);
+PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_CALA);
+PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_CALB);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_ALS0);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_ALS1);
 PCAT_ASSERT_SEMU_CHILD_CODE4_LEN(PCAT_SEMU_CKEY_CFMS);

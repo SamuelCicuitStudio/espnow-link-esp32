@@ -69,8 +69,8 @@ pre{background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;white-space:
   <div class="row">
     <label class="small">timeout_ms <input id="timeoutMs" value="5000"></label>
     <label class="small">wait_terminal <input id="waitTerminal" value="1"></label>
-    <label class="small">setting key <input id="settingKey" placeholder="example: fan_mode"></label>
-    <label class="small">setting value <input id="settingVal" placeholder="example: 1"></label>
+    <label class="small">setting key <input id="settingKey" placeholder="example: v0.detect_fall_delta_cm"></label>
+    <label class="small">setting value <input id="settingVal" placeholder="example: 35"></label>
     <label class="small">channel <input id="channelVal" value="6"></label>
     <label class="small">path <input id="pathVal" value="/"></label>
     <label class="small">epoch_s <input id="epochVal" placeholder="UNIX seconds"></label>
@@ -86,6 +86,8 @@ pre{background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;white-space:
     <label class="small">trig_src_vi <input id="trigSrcVi" value="255"></label>
   </div>
   <div class="help">Each button runs <code>/api/command?name=...</code>. Output includes command name, req/op IDs, terminal state, payload hex/text.</div>
+  <div class="help">SEMU/SENS key examples: <code>detect_fall_delta_cm</code>, <code>detect_release_delta_cm</code>, <code>detect_window_ms</code>, <code>detect_clear_hold_ms</code>, <code>tfl_a_calib_mm</code>, <code>tfl_b_calib_mm</code>.</div>
+  <div class="help">SEMU child key example: <code>v0.detect_fall_delta_cm</code>, <code>v0.tfl_a_calib_mm</code>. REMU child example: <code>v0.output_enable</code>. Telemetry includes <code>tfl_a_flux</code>, <code>tfl_b_flux</code>, <code>tfl_a_temp_c</code>, <code>tfl_b_temp_c</code>.</div>
 </div>
 
 <div class="card">
