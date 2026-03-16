@@ -56,6 +56,17 @@ Supported setting commands:
 
 `SettingDescriptor` includes `setting_id`, `key`, `value_type`, `writable`, `current_value`, and `default_value`.
 
+CLI helper coverage:
+
+- `settings` / `settings.raw` use paged descriptor fetch
+- `settings.full` iterates active profile setting schema (profile-aware full pull)
+- `get` / `get.id` and `set` / `set.id` map to typed management set/get commands
+
+Child-key namespace:
+
+- `SEMU`: `v<0..7>.<field>`
+- `REMU`: `v<0..15>.<field>`
+
 ## Resolved Value Rule
 
 Resolved setting value for UI/control should be interpreted as:

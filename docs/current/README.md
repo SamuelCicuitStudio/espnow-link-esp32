@@ -8,6 +8,13 @@ Scope rules:
 - no project/app-specific workflows
 - one subject per file
 
+## Recommended Read Order
+
+- `cli.md` for operator command model (`active` targeting, profile-aware commands, role-specific render output)
+- `profiles-registry.md` for current profile key contracts and map surfaces
+- `telemetry.md` for pull/push command model and push validation limits
+- `descriptors-settings.md` for settings schema/get/set behavior
+
 ## Document Index
 
 - `architecture.md` - Runtime modules and ownership boundaries

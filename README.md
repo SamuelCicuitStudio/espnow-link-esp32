@@ -48,6 +48,62 @@ For deterministic coexistence between API and CLI:
 - Treat deferred operations as complete only after terminal response/event
 - Confirm setting writes with readback when strict state convergence is required
 
+## CLI Quick Reference (Current)
+
+Master CLI targeting now supports both sticky and one-shot selection:
+
+- Sticky target:
+  - `active <paired_index|MAC>`
+  - `active`
+  - `active clear`
+- One-shot override:
+  - `<paired_index> <command>`
+  - `<MAC> <command>`
+
+Common command groups:
+
+- Descriptor/profile:
+  - `desc`, `caps`, `telem`, `telem.now`, `telem.now.child <vid>`
+- Settings:
+  - `settings`, `settings.full`, `settings.raw`
+  - `get <key>`, `get.id <id>`, `set <key>=<value>`, `set.id <id>=<value>`
+- Push:
+  - `push.start|update|pause|resume|stop|get`
+  - `push.one`, `push.id`
+  - `push.child.start <vid> ...`, `push.child.stop <vid>`
+
+Profile-aware behavior:
+
+- `settings.full` and `push.start/update` build from the active profile schema.
+- If profile is unresolved, CLI queues a probe and asks retry.
+- `telem.now.child` supports `SEMU` (`0..7`) and `REMU` (`0..15`).
+
+Telemetry rendering by role:
+
+- `PMS`: power table (`wallv`, `battv`, `walli`, `batti`, `psrc`, `trip`, `rcut`)
+- `SENS/SEMU`: environment + TF-Luna A/B rows (mm/flux/temp)
+- `RELAY/REMU`: relay system rows + per-output rows
+
+Push validation limits (runtime-enforced):
+
+- stream interval: `200..60000 ms`
+- min report gap: `50..60000 ms`
+- max metrics per stream: `16`
+
+## Profile Updates (Current Highlights)
+
+- `RELAY` and `REMU` now expose `persist_output_state` (global output-state persistence toggle).
+- `REMU` child key namespace includes `v<vid>.output_enable`.
+- `SENS` and `SEMU` include direction/calibration settings:
+  - `detect_fall_delta_cm`, `detect_release_delta_cm`
+  - `ab_spacing_cm`
+  - `tfl_a_calib_mm`, `tfl_b_calib_mm`
+  - `detect_window_ms`, `detect_clear_hold_ms`
+- `SENS` and `SEMU` include sampling settings:
+  - `sample_loop_ms`
+  - `sample_ring_n`
+- `SENS` and `SEMU` telemetry includes TF-Luna distance, flux, and temperature metrics.
+
 ## Documentation Map
 
 Canonical docs are in `docs/current`:
