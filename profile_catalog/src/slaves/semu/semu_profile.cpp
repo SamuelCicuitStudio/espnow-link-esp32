@@ -91,7 +91,7 @@ constexpr ChildSettingDef kChildSettingDefs[] = {
     {"neg_relays", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_NEGR, "[]", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"detect_fall_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFNR, "200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFNR_MIN, PCAT_SENS_SET_TFNR_MAX, false, 0.0f, 0.0f, nullptr},
     {"detect_release_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFFR, "3200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFFR_MIN, PCAT_SENS_SET_TFFR_MAX, false, 0.0f, 0.0f, nullptr},
-    {"ab_spacing_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ABSP, "350", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_ABSP_MIN, PCAT_SENS_SET_ABSP_MAX, false, 0.0f, 0.0f, nullptr},
+    {"ab_spacing_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ABSP, "5", "type=u32;rw=1;min=0;max=6553;child=1", true, PCAT_SENS_SET_ABSP_CM_MIN, PCAT_SENS_SET_ABSP_CM_MAX, false, 0.0f, 0.0f, nullptr},
     {"tfl_a_calib_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CALA, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SEMU_SET_CALA_MIN, PCAT_SEMU_SET_CALA_MAX, false, 0.0f, 0.0f, nullptr},
     {"tfl_b_calib_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CALB, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SEMU_SET_CALB_MIN, PCAT_SEMU_SET_CALB_MAX, false, 0.0f, 0.0f, nullptr},
     {"als_t0_lux", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ALS0, "180", "type=u32;rw=1;min=1;max=65535;child=1", true, PCAT_SENS_SET_ALS0_MIN, PCAT_SENS_SET_ALS0_MAX, false, 0.0f, 0.0f, nullptr},
@@ -171,6 +171,8 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0111, PCAT_SEMU_SET_VLCNT, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_VLCNT, "3", "type=u32;rw=1;min=0;max=255", true, PCAT_SEMU_SET_VLCNT_MIN, PCAT_SEMU_SET_VLCNT_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0112, PCAT_SEMU_SET_VLMS, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_VLMS, "250", "type=u32;rw=1;min=0;max=65535", true, PCAT_SEMU_SET_VLMS_MIN, PCAT_SEMU_SET_VLMS_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0113, PCAT_SEMU_SET_VENV, espnow_link::SettingValueType::Bool, PCAT_SEMU_KEY_VENV, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {0x0114, PCAT_SEMU_SET_SLPMS, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_SLPMS, "50", "type=u32;rw=1;min=10;max=1000", true, PCAT_SEMU_SET_SLMS_MIN, PCAT_SEMU_SET_SLMS_MAX, false, 0.0f, 0.0f, nullptr},
+    {0x0115, PCAT_SEMU_SET_RINGN, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_RINGN, "64", "type=u32;rw=1;min=1;max=256", true, PCAT_SEMU_SET_RNGN_MIN, PCAT_SEMU_SET_RNGN_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0120, PCAT_SEMU_SET_ALS0, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_ALS0, "180", "type=u32;rw=1;min=1;max=65535", true, PCAT_SEMU_SET_ALS0_MIN, PCAT_SEMU_SET_ALS0_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0121, PCAT_SEMU_SET_ALS1, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_ALS1, "300", "type=u32;rw=1;min=1;max=65535", true, PCAT_SEMU_SET_ALS1_MIN, PCAT_SEMU_SET_ALS1_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0301, PCAT_SEMU_SET_LOOPA, espnow_link::SettingValueType::Bool, PCAT_SEMU_KEY_LOOPA, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -510,7 +512,12 @@ bool SemuAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDesc
       d.description = s.desc;
       switch (s.type) {
         case espnow_link::SettingValueType::Int:
-          d.current_value = std::to_string(static_cast<unsigned long>(loadU32_(nvs_key.c_str(), static_cast<uint32_t>(std::strtoul(s.def, nullptr, 10)))));
+          if (std::strcmp(s.suffix, "ab_spacing_cm") == 0) {
+            const uint32_t raw_mm = loadU32_(nvs_key.c_str(), static_cast<uint32_t>(PCAT_SEMU_SET_ABSP_DEF));
+            d.current_value = std::to_string(static_cast<unsigned long>(raw_mm / 10U));
+          } else {
+            d.current_value = std::to_string(static_cast<unsigned long>(loadU32_(nvs_key.c_str(), static_cast<uint32_t>(std::strtoul(s.def, nullptr, 10)))));
+          }
           break;
         case espnow_link::SettingValueType::Float:
           d.current_value = formatFloat_(loadFloat_(nvs_key.c_str(), std::strtof(s.def, nullptr)));
@@ -615,6 +622,16 @@ bool SemuAppDescriptorProvider::setSetting(const std::string& key, const std::st
         if (!parseU32(value, parsed)) {
           out_message = setting_name + " expects integer";
           return false;
+        }
+        if (child_suffix == "ab_spacing_cm") {
+          if (parsed < PCAT_SENS_SET_ABSP_CM_MIN || parsed > PCAT_SENS_SET_ABSP_CM_MAX) {
+            out_message = setting_name + " out of range";
+            return false;
+          }
+          const uint32_t mm_value = parsed * 10U;
+          const bool ok = nvs_.putU32(nvs_key.c_str(), mm_value);
+          out_message = ok ? setting_name + " updated" : setting_name + " persist failed";
+          return finalizeSettingChange_(setting_name, value, ok, out_message);
         }
         if (child_def->has_int_range && (parsed < child_def->int_min || parsed > child_def->int_max)) {
           out_message = setting_name + " out of range";

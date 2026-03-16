@@ -19,7 +19,7 @@
 #define PCAT_SENS_KEY_NEGR "negrl"   // Negative-direction relay targets (JSON).
 #define PCAT_SENS_KEY_TFNR "tfnmm"   // Detection falling delta (cm).
 #define PCAT_SENS_KEY_TFFR "tffmm"   // Detection release delta (cm).
-#define PCAT_SENS_KEY_ABSP "abspc"   // A/B spacing baseline (mm).
+#define PCAT_SENS_KEY_ABSP "abspc"   // A/B spacing baseline storage (mm).
 #define PCAT_SENS_KEY_CALA "calamm"  // TFLuna-A calibrated baseline distance (mm).
 #define PCAT_SENS_KEY_CALB "calbmm"  // TFLuna-B calibrated baseline distance (mm).
 #define PCAT_SENS_KEY_ALS0 "als0"    // ALS lower threshold (lux).
@@ -33,6 +33,8 @@
 #define PCAT_SENS_KEY_TFAA "tfaad"   // TFLuna-A I2C address.
 #define PCAT_SENS_KEY_TFBA "tfbad"   // TFLuna-B I2C address.
 #define PCAT_SENS_KEY_TFFP "tffps"   // TFLuna frame rate (fps).
+#define PCAT_SENS_KEY_SLPMS "slpms"  // Sensor cache/sample loop period (ms).
+#define PCAT_SENS_KEY_RINGN "ringn"  // Sensor ring/history depth (N).
 #define PCAT_SENS_KEY_LOOPA "loopa"  // Loop automation enable.
 #define PCAT_SENS_KEY_FANMD "fanmd"  // Fan mode (0:auto,1:eco,2:forced,3:stopped).
 #define PCAT_SENS_KEY_BUZEN "buzen"  // Audio ping buzzer feedback enable.
@@ -61,7 +63,7 @@
 #define PCAT_SENS_SET_NEGR "neg_relays"
 #define PCAT_SENS_SET_TFNR "detect_fall_delta_cm"
 #define PCAT_SENS_SET_TFFR "detect_release_delta_cm"
-#define PCAT_SENS_SET_ABSP "ab_spacing_mm"
+#define PCAT_SENS_SET_ABSP "ab_spacing_cm"
 #define PCAT_SENS_SET_CALA "tfl_a_calib_mm"
 #define PCAT_SENS_SET_CALB "tfl_b_calib_mm"
 #define PCAT_SENS_SET_ALS0 "als_t0_lux"
@@ -75,6 +77,8 @@
 #define PCAT_SENS_SET_TFAA "tfl_a_addr"
 #define PCAT_SENS_SET_TFBA "tfl_b_addr"
 #define PCAT_SENS_SET_TFFP "tfl_fps"
+#define PCAT_SENS_SET_SLPMS "sample_loop_ms"
+#define PCAT_SENS_SET_RINGN "sample_ring_n"
 #define PCAT_SENS_SET_LOOPA "LoopAuto"
 #define PCAT_SENS_SET_FANMD "fan_mode"
 #define PCAT_SENS_SET_BUZEN "buzzer_enable"
@@ -120,9 +124,14 @@
 #define PCAT_SENS_SET_TFFR_DEF 3200U
 #define PCAT_SENS_SET_TFFR_MIN 0U
 #define PCAT_SENS_SET_TFFR_MAX 65535U
+// Internal storage defaults/ranges (mm) used by runtime logic.
 #define PCAT_SENS_SET_ABSP_DEF 350U
 #define PCAT_SENS_SET_ABSP_MIN 0U
 #define PCAT_SENS_SET_ABSP_MAX 65535U
+// Public profile contract defaults/ranges (cm) exposed to API/CLI/UI.
+#define PCAT_SENS_SET_ABSP_CM_DEF 35U
+#define PCAT_SENS_SET_ABSP_CM_MIN 0U
+#define PCAT_SENS_SET_ABSP_CM_MAX 6553U
 #define PCAT_SENS_SET_CALA_DEF 0U
 #define PCAT_SENS_SET_CALA_MIN 0U
 #define PCAT_SENS_SET_CALA_MAX 65535U
@@ -162,6 +171,12 @@
 #define PCAT_SENS_SET_TFFP_DEF 0U
 #define PCAT_SENS_SET_TFFP_MIN 0U
 #define PCAT_SENS_SET_TFFP_MAX 250U
+#define PCAT_SENS_SET_SLPMS_DEF 50U
+#define PCAT_SENS_SET_SLPMS_MIN 10U
+#define PCAT_SENS_SET_SLPMS_MAX 1000U
+#define PCAT_SENS_SET_RINGN_DEF 64U
+#define PCAT_SENS_SET_RINGN_MIN 1U
+#define PCAT_SENS_SET_RINGN_MAX 256U
 #define PCAT_SENS_SET_LOOPA_DEF 0
 #define PCAT_SENS_SET_FANMD_DEF 0U
 #define PCAT_SENS_SET_FANMD_MIN 0U
@@ -189,7 +204,7 @@
 #define PCAT_SENS_SET_TOPC_DEF 0U
 
 // Key maps used in capabilities.
-#define PCAT_SENS_SETMAP "device_name,channel,prev_mac,next_mac,pos_relays,neg_relays,detect_fall_delta_cm,detect_release_delta_cm,ab_spacing_mm,tfl_a_calib_mm,tfl_b_calib_mm,als_t0_lux,als_t1_lux,detect_window_ms,detect_clear_hold_ms,relay_on_ms,relay_off_ms,lead_count,lead_step_ms,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s"
+#define PCAT_SENS_SETMAP "device_name,channel,prev_mac,next_mac,pos_relays,neg_relays,detect_fall_delta_cm,detect_release_delta_cm,ab_spacing_cm,tfl_a_calib_mm,tfl_b_calib_mm,als_t0_lux,als_t1_lux,detect_window_ms,detect_clear_hold_ms,relay_on_ms,relay_off_ms,lead_count,lead_step_ms,sample_loop_ms,sample_ring_n,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s"
 #define PCAT_SENS_METMAP "tfl_a_mm,tfl_b_mm,tfl_a_flux,tfl_b_flux,tfl_a_temp_c,tfl_b_temp_c,env_temp_c,env_hum_pct,env_press_pa,lux"
 #define PCAT_SENS_EVMAP "trigger_sent,topology_applied,sensor_fault"
 
@@ -216,6 +231,8 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_LSTP);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TFAA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TFBA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_TFFP);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_SLPMS);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_RINGN);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_LOOPA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_FANMD);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SENS_KEY_BUZEN);

@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <cmath>
 
@@ -70,7 +71,7 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0104, PCAT_SENS_SET_NEGR, espnow_link::SettingValueType::String, PCAT_SENS_KEY_NEGR, "[]", "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0201, PCAT_SENS_SET_TFNR, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_TFNR, "200", "type=u32;rw=1;min=0;max=65535", true, PCAT_SENS_SET_TFNR_MIN, PCAT_SENS_SET_TFNR_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0202, PCAT_SENS_SET_TFFR, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_TFFR, "3200", "type=u32;rw=1;min=0;max=65535", true, PCAT_SENS_SET_TFFR_MIN, PCAT_SENS_SET_TFFR_MAX, false, 0.0f, 0.0f, nullptr},
-    {0x0203, PCAT_SENS_SET_ABSP, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_ABSP, "350", "type=u32;rw=1;min=0;max=65535", true, PCAT_SENS_SET_ABSP_MIN, PCAT_SENS_SET_ABSP_MAX, false, 0.0f, 0.0f, nullptr},
+    {0x0203, PCAT_SENS_SET_ABSP, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_ABSP, "35", "type=u32;rw=1;min=0;max=6553", true, PCAT_SENS_SET_ABSP_CM_MIN, PCAT_SENS_SET_ABSP_CM_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0204, PCAT_SENS_SET_ALS0, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_ALS0, "180", "type=u32;rw=1;min=1;max=65535", true, PCAT_SENS_SET_ALS0_MIN, PCAT_SENS_SET_ALS0_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0205, PCAT_SENS_SET_ALS1, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_ALS1, "300", "type=u32;rw=1;min=1;max=65535", true, PCAT_SENS_SET_ALS1_MIN, PCAT_SENS_SET_ALS1_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0206, PCAT_SENS_SET_CALA, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_CALA, "0", "type=u32;rw=1;min=0;max=65535", true, PCAT_SENS_SET_CALA_MIN, PCAT_SENS_SET_CALA_MAX, false, 0.0f, 0.0f, nullptr},
@@ -81,6 +82,8 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0213, PCAT_SENS_SET_ROF, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_ROF, "0", "type=u32;rw=1;min=0;max=65535", true, PCAT_SENS_SET_ROF_MIN, PCAT_SENS_SET_ROF_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0214, PCAT_SENS_SET_LCNT, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_LCNT, "3", "type=u32;rw=1;min=0;max=255", true, PCAT_SENS_SET_LCNT_MIN, PCAT_SENS_SET_LCNT_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0215, PCAT_SENS_SET_LSTP, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_LSTP, "250", "type=u32;rw=1;min=0;max=65535", true, PCAT_SENS_SET_LSTP_MIN, PCAT_SENS_SET_LSTP_MAX, false, 0.0f, 0.0f, nullptr},
+    {0x0216, PCAT_SENS_SET_SLPMS, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_SLPMS, "50", "type=u32;rw=1;min=10;max=1000", true, PCAT_SENS_SET_SLPMS_MIN, PCAT_SENS_SET_SLPMS_MAX, false, 0.0f, 0.0f, nullptr},
+    {0x0217, PCAT_SENS_SET_RINGN, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_RINGN, "64", "type=u32;rw=1;min=1;max=256", true, PCAT_SENS_SET_RINGN_MIN, PCAT_SENS_SET_RINGN_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0301, PCAT_SENS_SET_LOOPA, espnow_link::SettingValueType::Bool, PCAT_SENS_KEY_LOOPA, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x030A, PCAT_SENS_SET_FANMD, espnow_link::SettingValueType::Int, PCAT_SENS_KEY_FANMD, "0", "type=u32;rw=1;min=0;max=3;enum=0:auto|1:eco|2:forced|3:stopped", true, PCAT_SENS_SET_FANMD_MIN, PCAT_SENS_SET_FANMD_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0308, PCAT_SENS_SET_BUZEN, espnow_link::SettingValueType::Bool, PCAT_SENS_KEY_BUZEN, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -333,7 +336,12 @@ bool SensAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDesc
     d.description = s.desc;
     switch (s.type) {
       case espnow_link::SettingValueType::Int:
-        d.current_value = std::to_string(static_cast<unsigned long>(loadU32_(s.nvs, static_cast<uint32_t>(std::strtoul(s.def, nullptr, 10)))));
+        if (std::strcmp(s.key, PCAT_SENS_SET_ABSP) == 0) {
+          const uint32_t raw_mm = loadU32_(s.nvs, static_cast<uint32_t>(PCAT_SENS_SET_ABSP_DEF));
+          d.current_value = std::to_string(static_cast<unsigned long>(raw_mm / 10U));
+        } else {
+          d.current_value = std::to_string(static_cast<unsigned long>(loadU32_(s.nvs, static_cast<uint32_t>(std::strtoul(s.def, nullptr, 10)))));
+        }
         break;
       case espnow_link::SettingValueType::Float:
         d.current_value = formatFloat_(loadFloat_(s.nvs, std::strtof(s.def, nullptr)));
@@ -424,6 +432,16 @@ bool SensAppDescriptorProvider::setSetting(const std::string& key, const std::st
       if (!parseU32(value, parsed)) {
         out_message = std::string(def->key) + " expects integer";
         return false;
+      }
+      if (key == PCAT_SENS_SET_ABSP) {
+        if (parsed < PCAT_SENS_SET_ABSP_CM_MIN || parsed > PCAT_SENS_SET_ABSP_CM_MAX) {
+          out_message = std::string(def->key) + " out of range";
+          return false;
+        }
+        const uint32_t mm_value = parsed * 10U;
+        const bool ok = nvs_.putU32(def->nvs, mm_value);
+        out_message = ok ? std::string(def->key) + " updated" : std::string(def->key) + " persist failed";
+        return finalizeSettingChange_(key, value, ok, out_message);
       }
       if (def->has_int_range && (parsed < def->int_min || parsed > def->int_max)) {
         out_message = std::string(def->key) + " out of range";

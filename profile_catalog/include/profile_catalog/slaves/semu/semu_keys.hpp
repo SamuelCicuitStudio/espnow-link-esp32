@@ -24,6 +24,8 @@
 #define PCAT_SEMU_KEY_VENV "venv"    // Enable virtual environmental stream.
 #define PCAT_SEMU_KEY_ALS0 "als0"    // Global ALS lower threshold (lux).
 #define PCAT_SEMU_KEY_ALS1 "als1"    // Global ALS upper threshold (lux).
+#define PCAT_SEMU_KEY_SLPMS "slpms"  // Global sensor cache/sample loop period (ms).
+#define PCAT_SEMU_KEY_RINGN "ringn"  // Global sensor ring/history depth (N).
 #define PCAT_SEMU_KEY_LOOPA "loopa"  // Auto-loop traversal enable.
 #define PCAT_SEMU_KEY_FANMD "fanmd"  // Fan mode (0:auto,1:eco,2:forced,3:stopped).
 #define PCAT_SEMU_KEY_BUZEN "buzen"  // Audio ping buzzer feedback enable.
@@ -81,6 +83,8 @@
 #define PCAT_SEMU_SET_VENV "venv_enable"
 #define PCAT_SEMU_SET_ALS0 "als_t0_lux"
 #define PCAT_SEMU_SET_ALS1 "als_t1_lux"
+#define PCAT_SEMU_SET_SLPMS "sample_loop_ms"
+#define PCAT_SEMU_SET_RINGN "sample_ring_n"
 #define PCAT_SEMU_SET_LOOPA "LoopAuto"
 #define PCAT_SEMU_SET_FANMD "fan_mode"
 #define PCAT_SEMU_SET_BUZEN "buzzer_enable"
@@ -139,6 +143,9 @@
 #define PCAT_SEMU_SET_CALB_DEF 0U
 #define PCAT_SEMU_SET_CALB_MIN 0U
 #define PCAT_SEMU_SET_CALB_MAX 65535U
+// SEMU per-child spacing defaults (public unit cm, internal unit mm).
+#define PCAT_SEMU_SET_ABSP_CM_DEF 5U
+#define PCAT_SEMU_SET_ABSP_DEF 50U
 #define PCAT_SEMU_SET_LOOPA_DEF 0
 #define PCAT_SEMU_SET_FANMD_DEF 0U
 #define PCAT_SEMU_SET_FANMD_MIN 0U
@@ -164,9 +171,15 @@
 #define PCAT_SEMU_SET_PSHS_DEF "all"
 #define PCAT_SEMU_SET_TOPV_DEF 0U
 #define PCAT_SEMU_SET_TOPC_DEF 0U
+#define PCAT_SEMU_SET_SLMS_DEF 50U
+#define PCAT_SEMU_SET_SLMS_MIN 10U
+#define PCAT_SEMU_SET_SLMS_MAX 1000U
+#define PCAT_SEMU_SET_RNGN_DEF 64U
+#define PCAT_SEMU_SET_RNGN_MIN 1U
+#define PCAT_SEMU_SET_RNGN_MAX 256U
 
 // Key maps used in capabilities.
-#define PCAT_SEMU_SETMAP "device_name,channel,sensor_count,prev_mac,next_mac,pos_relays,neg_relays,von_ms,vlead_count,vlead_ms,venv_enable,als_t0_lux,als_t1_lux,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s"
+#define PCAT_SEMU_SETMAP "device_name,channel,sensor_count,prev_mac,next_mac,pos_relays,neg_relays,von_ms,vlead_count,vlead_ms,venv_enable,als_t0_lux,als_t1_lux,sample_loop_ms,sample_ring_n,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_relay_targets_blob,topo_commit_epoch_s"
 #define PCAT_SEMU_METMAP "env_temp_c,env_hum_pct,env_press_pa,lux,v{0..7}.tfl_a_mm,v{0..7}.tfl_b_mm,v{0..7}.tfl_a_flux,v{0..7}.tfl_b_flux,v{0..7}.tfl_a_temp_c,v{0..7}.tfl_b_temp_c"
 #define PCAT_SEMU_EVMAP "trigger_sent,topology_applied,virtual_sensor_fault"
 
@@ -186,6 +199,8 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_VLMS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_VENV);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_ALS0);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_ALS1);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_SLPMS);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_RINGN);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_LOOPA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_FANMD);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_SEMU_KEY_BUZEN);

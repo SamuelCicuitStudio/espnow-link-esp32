@@ -4817,12 +4817,13 @@ bool MasterCli::handleDescriptorShortCommands(const std::string& lower) {
       return true;
     }
     const std::vector<std::string> tokens = splitTokens(lower);
-    if (tokens.size() != 3U) {
+    if (tokens.size() != 2U && tokens.size() != 3U) {
       writef("[MASTER][CLI] usage: telem.now.child <vid:0..%u>", static_cast<unsigned int>(max_vid));
       return true;
     }
     uint32_t vid = 0U;
-    if (!parseU32Token(tokens[2], vid) || vid > max_vid) {
+    const std::string& vid_token = (tokens.size() == 2U) ? tokens[1] : tokens[2];
+    if (!parseU32Token(vid_token, vid) || vid > max_vid) {
       writef("[MASTER][CLI] invalid child vid (0..%u)", static_cast<unsigned int>(max_vid));
       return true;
     }
