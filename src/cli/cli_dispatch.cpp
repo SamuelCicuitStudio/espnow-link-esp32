@@ -1347,17 +1347,16 @@ std::string otaArchiveNormalizeId(const std::string& raw) {
 
 bool MasterCli::requestFullSettingsByProfile() {
   if (!hasRuntimePeer()) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return false;
   }
 
   clearPagedFetchState();
 
-  const ProfileId profile_id = remote_profile_id_;
-
-  if (profile_id == kProfileUnknown) {
-    io_.writeln("[MASTER][CLI] profile unknown; run caps first");
+  ProfileId profile_id = kProfileUnknown;
+  if (!ensureRuntimeProfileKnown_(profile_id, true) || profile_id == kProfileUnknown) {
+    io_.writeln("[MASTER][CLI] profile unresolved; probe queued, retry settings.full");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "validation");
     return false;
   }
@@ -1513,7 +1512,7 @@ bool MasterCli::handleGetIdCommand(const std::string& line, const std::string& l
   }
 
   if (!hasRuntimePeer()) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return true;
   }
@@ -1558,7 +1557,7 @@ bool MasterCli::handleSetIdCommand(const std::string& line, const std::string& l
   }
 
   if (!hasRuntimePeer()) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return true;
   }
@@ -1736,7 +1735,7 @@ bool MasterCli::handleAutopullCommand(const std::string& lower) {
   if (startsWith(arg, "on")) {
     MacAddress runtime_peer{};
     if (!resolveRuntimePeer(runtime_peer)) {
-      io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+      io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
       captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
       return true;
     }
@@ -1767,13 +1766,13 @@ bool MasterCli::handlePushCommands(const std::string& line, const std::string& l
   }
 
   if (!hasRuntimePeer()) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return true;
   }
   MacAddress runtime_peer{};
   if (!resolveRuntimePeer(runtime_peer)) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return true;
   }
@@ -1901,7 +1900,11 @@ bool MasterCli::handlePushCommands(const std::string& line, const std::string& l
   };
 
   auto resolveRemoteProfileId = [&]() -> ProfileId {
-    return remote_profile_id_;
+    ProfileId resolved = kProfileUnknown;
+    if (ensureRuntimeProfileKnown_(resolved, false)) {
+      return resolved;
+    }
+    return kProfileUnknown;
   };
 
   auto activeChildPushProfile = [&]() -> ChildPushProfile {
@@ -1981,7 +1984,9 @@ bool MasterCli::handlePushCommands(const std::string& line, const std::string& l
   if (cmd == "push.child.start" || cmd == "push.child.update") {
     const ChildPushProfile child_profile = activeChildPushProfile();
     if (child_profile == ChildPushProfile::Unknown) {
-      io_.writeln("[MASTER][CLI] child push requires SEMU or REMU target (run caps on selected peer first)");
+      ProfileId ignored = kProfileUnknown;
+      (void)ensureRuntimeProfileKnown_(ignored, true);
+      io_.writeln("[MASTER][CLI] child push requires SEMU/REMU profile; probe queued, retry in a moment");
       return true;
     }
     const uint32_t max_vid = (child_profile == ChildPushProfile::Semu) ? 7U : 15U;
@@ -2090,7 +2095,9 @@ bool MasterCli::handlePushCommands(const std::string& line, const std::string& l
   if (cmd == "push.child.stop") {
     const ChildPushProfile child_profile = activeChildPushProfile();
     if (child_profile == ChildPushProfile::Unknown) {
-      io_.writeln("[MASTER][CLI] child stop requires SEMU or REMU target (run caps on selected peer first)");
+      ProfileId ignored = kProfileUnknown;
+      (void)ensureRuntimeProfileKnown_(ignored, true);
+      io_.writeln("[MASTER][CLI] child stop requires SEMU/REMU profile; probe queued, retry in a moment");
       return true;
     }
     const uint32_t max_vid = (child_profile == ChildPushProfile::Semu) ? 7U : 15U;
@@ -2190,11 +2197,10 @@ bool MasterCli::handlePushCommands(const std::string& line, const std::string& l
     if (remote_profile_id != kProfileUnknown) {
       profile = ProfileRegistry::instance().find(remote_profile_id);
     }
-    if (profile == nullptr) {
-      profile = manager_.localProfile();
-    }
     if (profile == nullptr || profile->telemetryMetrics().empty()) {
-      io_.writeln("[MASTER][CLI] telemetry profile unknown; run caps first");
+      ProfileId ignored = kProfileUnknown;
+      (void)ensureRuntimeProfileKnown_(ignored, true);
+      io_.writeln("[MASTER][CLI] telemetry profile unresolved; probe queued, retry command");
       return true;
     }
 
@@ -2864,7 +2870,7 @@ bool MasterCli::handleRestartResetCommands(const std::string& lower) {
 
   if (lower == "restart slave" || lower == "reset slave") {
     if (!hasRuntimePeer()) {
-      io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+      io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
       captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
       return true;
     }
@@ -3084,6 +3090,58 @@ bool MasterCli::handleCliMetaCommands(const std::string& lower) {
   return false;
 }
 bool MasterCli::handleListAndStatusCommands(const std::string& lower) {
+  if (sticky_target_active_ && !manager_.hasPersistedPair(sticky_target_peer_)) {
+    clearActiveTarget_();
+  }
+
+  auto profileHint = [&](ProfileId profile_id) -> std::string {
+    if (profile_id == kProfileUnknown) {
+      return "unknown";
+    }
+    const IProfileDefinition* def = ProfileRegistry::instance().find(profile_id);
+    if (def != nullptr && def->profileName() != nullptr && def->profileName()[0] != '\0') {
+      return std::string(def->profileName());
+    }
+    char buf[16] = {0};
+    std::snprintf(buf, sizeof(buf), "0x%04X", static_cast<unsigned int>(profile_id));
+    return std::string(buf);
+  };
+
+  if (lower == "active") {
+    MacAddress active{};
+    if (!resolveRuntimePeer(active)) {
+      io_.writeln("[MASTER][CLI] active target=none");
+      return true;
+    }
+    ProfileId cached_profile = kProfileUnknown;
+    (void)ensureRuntimeProfileKnown_(cached_profile, false);
+    writef("[MASTER][CLI] active target=%s profile=%s",
+           macToPrintable(active).c_str(),
+           profileHint(cached_profile).c_str());
+    return true;
+  }
+
+  if (lower == "active clear") {
+    clearActiveTarget_();
+    io_.writeln("[MASTER][CLI] active target cleared");
+    return true;
+  }
+
+  if (startsWith(lower, "active ")) {
+    const std::string arg = trim(lower.substr(6));
+    MacAddress selected{};
+    if (!setActiveTargetBySelector_(arg, &selected)) {
+      io_.writeln("[MASTER][CLI] usage: active <paired_index|paired_mac> | active clear");
+      return true;
+    }
+    ProfileId resolved_profile = kProfileUnknown;
+    const bool known = ensureRuntimeProfileKnown_(resolved_profile, false);
+    writef("[MASTER][CLI] active target=%s profile=%s",
+           macToPrintable(selected).c_str(),
+           profileHint(known ? resolved_profile : kProfileUnknown).c_str());
+    return true;
+  }
+
   if (lower == "list") {
     constexpr uint32_t kListWindowMs = 10000U;
     discovered_.clear();
@@ -3143,11 +3201,15 @@ bool MasterCli::handleListAndStatusCommands(const std::string& lower) {
     writef("[MASTER][CLI] paired_slots=%u/14",
            static_cast<unsigned int>(paired_slots));
 
-    io_.writeln("[MASTER][CLI] target_mode=explicit_selector_only");
+    io_.writeln("[MASTER][CLI] target_mode=active_with_prefix_override");
+    writef("[MASTER][CLI] active_target=%s", sticky_target_active_ ? "set" : "none");
 
     MacAddress runtime_target{};
     if (resolveRuntimePeer(runtime_target)) {
       writef("[MASTER][CLI] runtime_target=%s", macToPrintable(runtime_target).c_str());
+      ProfileId cached_profile = kProfileUnknown;
+      (void)ensureRuntimeProfileKnown_(cached_profile, false);
+      writef("[MASTER][CLI] runtime_profile=%s", profileHint(cached_profile).c_str());
     } else {
       io_.writeln("[MASTER][CLI] runtime_target=none");
     }
@@ -3234,7 +3296,7 @@ bool MasterCli::handlePairingCommands(const std::string& line, const std::string
 
   if (lower == "unpair") {
     if (!hasRuntimePeer()) {
-      io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+      io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
       captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
       return true;
     }
@@ -3310,6 +3372,10 @@ bool MasterCli::handlePairingCommands(const std::string& line, const std::string
                                                 false);
     correlation_id_ = mgmt.nextReqId();
     if (removed) {
+      eraseCachedRemoteProfile_(target);
+      if (sticky_target_active_ && sticky_target_peer_ == target) {
+        clearActiveTarget_();
+      }
       if (is_runtime_peer) {
         clearPeerSessionState_();
       }
@@ -4803,9 +4869,10 @@ bool MasterCli::handleDescriptorShortCommands(const std::string& lower) {
     return true;
   }
   if (startsWith(lower, "telem.now.child ")) {
-    const ProfileId profile_id = remote_profile_id_;
+    ProfileId profile_id = kProfileUnknown;
+    (void)ensureRuntimeProfileKnown_(profile_id, true);
     uint8_t max_vid = 15U;
-    const char* profile_label = "REMU";
+    const char* profile_label = "TARGET";
     if (profile_id == kProfileSemu) {
       max_vid = 7U;
       profile_label = "SEMU";
@@ -4813,8 +4880,7 @@ bool MasterCli::handleDescriptorShortCommands(const std::string& lower) {
       max_vid = 15U;
       profile_label = "REMU";
     } else {
-      io_.writeln("[MASTER][CLI] telem.now.child expects SEMU/REMU target (run caps on selected peer first)");
-      return true;
+      io_.writeln("[MASTER][CLI] profile unresolved; using vid range 0..15 until probe resolves");
     }
     const std::vector<std::string> tokens = splitTokens(lower);
     if (tokens.size() != 2U && tokens.size() != 3U) {
@@ -6475,7 +6541,7 @@ bool MasterCli::enqueuePagedFetchPage(uint16_t cursor) {
 bool MasterCli::startPagedFetch(PagedFetchKind kind, uint8_t page_size, const char* queued_msg) {
   MacAddress target_peer{};
   if (!resolveRuntimePeer(target_peer)) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return false;
   }
@@ -6820,6 +6886,27 @@ bool MasterCli::handlePagedDescriptorResponse(const DescriptorResponse& d) {
     merged.ota_manifest = paged_ota_manifest_cache_;
   }
 
+  if (paged_fetch_kind_ == PagedFetchKind::Capabilities && paged_fetch_has_target_peer_) {
+    ProfileId resolved = kProfileUnknown;
+    for (const auto& cap : merged.capabilities) {
+      if (cap.key != "profile_id") {
+        continue;
+      }
+      const unsigned long parsed = std::strtoul(cap.description.c_str(), nullptr, 10);
+      if (parsed > 0U && parsed <= 0xFFFFUL) {
+        resolved = static_cast<ProfileId>(parsed);
+      }
+      break;
+    }
+    if (resolved != kProfileUnknown) {
+      upsertCachedRemoteProfile_(paged_fetch_target_peer_, resolved);
+      MacAddress active_peer{};
+      if (resolveRuntimePeer(active_peer) && active_peer == paged_fetch_target_peer_) {
+        remote_profile_id_ = resolved;
+      }
+    }
+  }
+
   printDescriptorResponse(merged);
   printPagedFetchSummary();
   clearPagedFetchState();
@@ -6836,7 +6923,7 @@ bool MasterCli::enqueueDescriptorQuery(const std::string& cmd, const MacAddress*
   if (target_peer != nullptr) {
     target = *target_peer;
   } else if (!resolveRuntimePeer(target)) {
-    io_.writeln("[MASTER][CLI] target not selected (use <paired_index|paired_mac> command prefix)");
+    io_.writeln("[MASTER][CLI] target not selected (use active <paired_index|paired_mac> or command prefix)");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "target");
     return false;
   }
@@ -7700,6 +7787,7 @@ MasterCli::CommandDispatchResult MasterCli::handleLineEx(const std::string& raw)
   }
 
   const std::string lower = lowerCopy(command_line);
+  refreshRuntimeProfileHint_();
 
   auto isLocalOnlyHandledCommand = [&](const std::string& lower_cmd) -> bool {
     if (lower_cmd == "help" ||
@@ -7715,6 +7803,9 @@ MasterCli::CommandDispatchResult MasterCli::handleLineEx(const std::string& raw)
         lower_cmd == "cli off" ||
         lower_cmd == "metrics" ||
         lower_cmd == "metrics.reset" ||
+        lower_cmd == "active" ||
+        lower_cmd == "active clear" ||
+        startsWith(lower_cmd, "active ") ||
         lower_cmd == "paired" ||
         lower_cmd == "paired.list" ||
         lower_cmd == "status" ||

@@ -92,6 +92,7 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0107, PCAT_REMU_SET_SAMAC, espnow_link::SettingValueType::String, PCAT_REMU_KEY_SAMAC, "00:00:00:00:00:00", "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0108, PCAT_REMU_SET_SBMAC, espnow_link::SettingValueType::String, PCAT_REMU_KEY_SBMAC, "00:00:00:00:00:00", "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0301, PCAT_REMU_SET_LOOPA, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_LOOPA, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {0x030B, PCAT_REMU_SET_OPERS, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_OPERS, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x030A, PCAT_REMU_SET_FANMD, espnow_link::SettingValueType::Int, PCAT_REMU_KEY_FANMD, "0", "type=u32;rw=1;min=0;max=3;enum=0:auto|1:eco|2:forced|3:stopped", true, PCAT_REMU_SET_FANMD_MIN, PCAT_REMU_SET_FANMD_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0308, PCAT_REMU_SET_BUZEN, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_BUZEN, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0309, PCAT_REMU_SET_LEDFB, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_LEDFB, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -588,6 +589,16 @@ bool RemuAppDescriptorProvider::setSetting(const std::string& key, const std::st
         if (!parseBool(value, parsed)) {
           out_message = setting_name + " expects bool";
           return false;
+        }
+        const bool is_output_state = (std::strcmp(child_def->suffix, PCAT_REMU_CSET_OENA) == 0);
+        if (is_output_state) {
+          const bool persist_cfg = loadBool_(PCAT_REMU_KEY_OPERS, PCAT_REMU_SET_OPERS_DEF != 0);
+          const bool loop_auto = loadBool_(PCAT_REMU_KEY_LOOPA, PCAT_REMU_SET_LOOPA_DEF != 0);
+          const bool persist_effective = persist_cfg && !loop_auto;
+          if (!persist_effective) {
+            out_message = setting_name + " runtime-only update (persist disabled)";
+            return finalizeSettingChange_(setting_name, value, true, out_message);
+          }
         }
         const bool ok = nvs_.putBool(nvs_key.c_str(), parsed);
         out_message = ok ? setting_name + " updated" : setting_name + " persist failed";

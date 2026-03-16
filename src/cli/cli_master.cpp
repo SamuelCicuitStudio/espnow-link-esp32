@@ -268,6 +268,46 @@ bool loadFirmwareMetadataFromSidecar(IOtaStorageBackend& storage,
   return true;
 }
 
+bool extractProfileIdFromCapabilities(const DescriptorResponse& d, ProfileId& out_profile_id) {
+  out_profile_id = kProfileUnknown;
+  if (d.type != DescriptorResponseType::Capabilities) {
+    return false;
+  }
+  for (const auto& cap : d.capabilities) {
+    if (cap.key != "profile_id") {
+      continue;
+    }
+    const unsigned long parsed = std::strtoul(cap.description.c_str(), nullptr, 10);
+    if (parsed > 0U && parsed <= 0xFFFFUL) {
+      out_profile_id = static_cast<ProfileId>(parsed);
+      return true;
+    }
+  }
+  return false;
+}
+
+ProfileId profileIdFromRoleCode(uint8_t role_code) {
+  if (role_code == static_cast<uint8_t>(kProfilePms & 0xFFU)) {
+    return kProfilePms;
+  }
+  if (role_code == static_cast<uint8_t>(kProfileRelay & 0xFFU)) {
+    return kProfileRelay;
+  }
+  if (role_code == static_cast<uint8_t>(kProfileSens & 0xFFU)) {
+    return kProfileSens;
+  }
+  if (role_code == static_cast<uint8_t>(kProfileSemu & 0xFFU)) {
+    return kProfileSemu;
+  }
+  if (role_code == static_cast<uint8_t>(kProfileRemu & 0xFFU)) {
+    return kProfileRemu;
+  }
+  if (role_code == static_cast<uint8_t>(kProfileLockAlarm & 0xFFU)) {
+    return kProfileLockAlarm;
+  }
+  return kProfileUnknown;
+}
+
 }  // namespace
 
 
@@ -386,10 +426,10 @@ void MasterCli::writef(const char* fmt, ...) const {
 
 void MasterCli::printHelp() {
   io_.writeln("[MASTER][CLI] ESP-NOW Link Command Reference");
-  io_.writeln("  tip: run caps first, then settings.full / telem.now");
+  io_.writeln("  tip: set sticky target once with 'active <paired_index|mac>'");
   io_.writeln("  tip: .remote. commands target slave; others are local/master-side control");
-  io_.writeln("  tip: peer target syntax: <paired_index> <command>  or  <MAC> <command>");
-  io_.writeln("  tip: peer-bound commands require explicit target prefix");
+  io_.writeln("  tip: peer target syntax: active <index|mac> OR <index|mac> <command>");
+  io_.writeln("  tip: prefix target overrides active target for one command");
   io_.writeln("  quick help: help <topic>  or  <topic> help");
   io_.writeln("  topics: core paired pairing target topology desc settings push time control test log logger sd ota");
   io_.writeln("");
@@ -399,6 +439,9 @@ void MasterCli::printHelp() {
   io_.writeln("  list                              List discovered peers");
   io_.writeln("  paired                            List persisted paired peers (deterministic order)");
   io_.writeln("  status                            Show paired/runtime-target/discovery/queue status");
+  io_.writeln("  active                            Show sticky active target");
+  io_.writeln("  active <index|MAC>                Set sticky active target");
+  io_.writeln("  active clear                      Clear sticky active target");
   io_.writeln("  live enable                       Enable automatic paired-peer liveness monitor");
   io_.writeln("  live disable                      Disable automatic paired-peer liveness monitor");
   io_.writeln("  live status                       Show liveness monitor runtime status");
@@ -418,8 +461,10 @@ void MasterCli::printHelp() {
   io_.writeln("");
 
   io_.writeln("[TARGETING]");
-  io_.writeln("  rule: all peer-bound slave commands support target prefix");
-  io_.writeln("  syntax: <index> <command>  or  <MAC> <command>");
+  io_.writeln("  active <index|MAC>                Sticky target for subsequent peer-bound commands");
+  io_.writeln("  active clear                      Clear sticky target");
+  io_.writeln("  rule: all peer-bound commands support both active target and prefix override");
+  io_.writeln("  syntax: <index> <command>  or  <MAC> <command> (one-shot override)");
   io_.writeln("");
 
   io_.writeln("[TOPOLOGY]");
@@ -624,6 +669,7 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
     io_.writeln("  list                         Discovery window + peer list");
     io_.writeln("  paired                       Persisted paired peers list (pair_seq order)");
     io_.writeln("  status                       Paired/runtime-target/discovery/queue summary");
+    io_.writeln("  active [<index|mac>|clear]   Sticky runtime target show/set/clear");
     io_.writeln("  live enable|disable|status   Global auto liveness monitor control/status");
     io_.writeln("  cli status|on|off            Persisted CLI enable control");
     io_.writeln("  target syntax                <index> <command> or <mac> <command>");
@@ -632,9 +678,12 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
 
   if (t == "target" || t == "targeting" || t == "selector") {
     print_header("targeting", "How to route one command to one paired slave.");
+    io_.writeln("  active <index|mac>           Set sticky target peer");
+    io_.writeln("  active                       Show sticky target peer");
+    io_.writeln("  active clear                 Clear sticky target peer");
     io_.writeln("  <index> <peer-command>       Preferred: paired list index target");
     io_.writeln("  <mac> <peer-command>         Preferred: explicit paired MAC target");
-    io_.writeln("  target mode                  Prefix-only: <paired_index|paired_mac> <command>");
+    io_.writeln("  target mode                  Active target + optional prefix override");
     io_.writeln("  tip: run 'paired' to see stable paired indexes");
     io_.writeln("  note: applies to peer-bound slave commands");
     return true;
@@ -831,11 +880,82 @@ void MasterCli::clearPeerSessionState_() {
   ota_update_target_peer_ = {};
   probe_pending_kind_ = ProbePendingKind::None;
   probe_sent_ms_ = 0;
+  clearActiveTarget_();
+  peer_profile_cache_.clear();
+}
+
+void MasterCli::clearActiveTarget_() {
+  sticky_target_active_ = false;
+  sticky_target_peer_ = {};
+  remote_profile_id_ = kProfileUnknown;
+  remote_settings_count_ = 0U;
+}
+
+bool MasterCli::setActiveTargetBySelector_(const std::string& selector, MacAddress* out_peer) {
+  const std::string arg = trim(selector);
+  if (arg.empty()) {
+    return false;
+  }
+  std::vector<EspNowManager::PersistedPeerRoleEntry> persisted{};
+  manager_.getPersistedPeersWithRole(persisted);
+  if (persisted.empty()) {
+    return false;
+  }
+
+  MacAddress selected{};
+  ProfileId hinted_profile = kProfileUnknown;
+  bool ok = false;
+  bool all_digits = true;
+  for (char c : arg) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      all_digits = false;
+      break;
+    }
+  }
+  if (all_digits) {
+    const unsigned long idx = std::strtoul(arg.c_str(), nullptr, 10);
+    if (idx < persisted.size()) {
+      const auto& entry = persisted[static_cast<size_t>(idx)];
+      selected = entry.peer;
+      hinted_profile = profileIdFromRoleCode(entry.role_code);
+      ok = true;
+    }
+  } else {
+    MacAddress mac{};
+    if (parseMac(arg, mac) && manager_.hasPersistedPair(mac)) {
+      selected = mac;
+      for (const auto& entry : persisted) {
+        if (entry.peer == mac) {
+          hinted_profile = profileIdFromRoleCode(entry.role_code);
+          break;
+        }
+      }
+      ok = true;
+    }
+  }
+  if (!ok) {
+    return false;
+  }
+
+  sticky_target_active_ = true;
+  sticky_target_peer_ = selected;
+  if (hinted_profile != kProfileUnknown) {
+    upsertCachedRemoteProfile_(selected, hinted_profile);
+  }
+  refreshRuntimeProfileHint_();
+  if (out_peer != nullptr) {
+    *out_peer = selected;
+  }
+  return true;
 }
 
 bool MasterCli::resolveRuntimePeer(MacAddress& out_peer) const {
   if (command_target_override_active_) {
     out_peer = command_target_override_peer_;
+    return true;
+  }
+  if (sticky_target_active_ && manager_.hasPersistedPair(sticky_target_peer_)) {
+    out_peer = sticky_target_peer_;
     return true;
   }
   return false;
@@ -844,6 +964,95 @@ bool MasterCli::resolveRuntimePeer(MacAddress& out_peer) const {
 bool MasterCli::hasRuntimePeer() const {
   MacAddress peer{};
   return resolveRuntimePeer(peer);
+}
+
+bool MasterCli::getCachedRemoteProfile_(const MacAddress& peer, ProfileId& out_profile) const {
+  out_profile = kProfileUnknown;
+  for (const auto& entry : peer_profile_cache_) {
+    if (entry.peer == peer) {
+      out_profile = entry.profile_id;
+      return out_profile != kProfileUnknown;
+    }
+  }
+  return false;
+}
+
+void MasterCli::upsertCachedRemoteProfile_(const MacAddress& peer, ProfileId profile_id) {
+  if (profile_id == kProfileUnknown) {
+    return;
+  }
+  for (auto& entry : peer_profile_cache_) {
+    if (entry.peer == peer) {
+      entry.profile_id = profile_id;
+      return;
+    }
+  }
+  PeerProfileCacheEntry add{};
+  add.peer = peer;
+  add.profile_id = profile_id;
+  peer_profile_cache_.push_back(add);
+}
+
+void MasterCli::eraseCachedRemoteProfile_(const MacAddress& peer) {
+  peer_profile_cache_.erase(
+      std::remove_if(peer_profile_cache_.begin(),
+                     peer_profile_cache_.end(),
+                     [&](const PeerProfileCacheEntry& e) { return e.peer == peer; }),
+      peer_profile_cache_.end());
+}
+
+void MasterCli::refreshRuntimeProfileHint_() {
+  MacAddress target_peer{};
+  if (!resolveRuntimePeer(target_peer)) {
+    remote_profile_id_ = kProfileUnknown;
+    remote_settings_count_ = 0U;
+    return;
+  }
+  ProfileId cached = kProfileUnknown;
+  if (getCachedRemoteProfile_(target_peer, cached)) {
+    remote_profile_id_ = cached;
+  } else {
+    uint8_t role_code = 0U;
+    const ProfileId hinted = (manager_.loadPeerRoleHint(target_peer, role_code)
+                                  ? profileIdFromRoleCode(role_code)
+                                  : kProfileUnknown);
+    if (hinted != kProfileUnknown) {
+      upsertCachedRemoteProfile_(target_peer, hinted);
+      remote_profile_id_ = hinted;
+    } else {
+      remote_profile_id_ = kProfileUnknown;
+    }
+  }
+}
+
+bool MasterCli::ensureRuntimeProfileKnown_(ProfileId& out_profile, bool trigger_probe_on_miss) {
+  out_profile = kProfileUnknown;
+  MacAddress target_peer{};
+  if (!resolveRuntimePeer(target_peer)) {
+    remote_profile_id_ = kProfileUnknown;
+    return false;
+  }
+  ProfileId cached = kProfileUnknown;
+  if (getCachedRemoteProfile_(target_peer, cached)) {
+    remote_profile_id_ = cached;
+    out_profile = cached;
+    return true;
+  }
+  uint8_t role_code = 0U;
+  const ProfileId hinted = (manager_.loadPeerRoleHint(target_peer, role_code)
+                                ? profileIdFromRoleCode(role_code)
+                                : kProfileUnknown);
+  if (hinted != kProfileUnknown) {
+    upsertCachedRemoteProfile_(target_peer, hinted);
+    remote_profile_id_ = hinted;
+    out_profile = hinted;
+    return true;
+  }
+  remote_profile_id_ = kProfileUnknown;
+  if (trigger_probe_on_miss) {
+    (void)executeDescriptorQueryNow("CAPS.GET", &target_peer);
+  }
+  return false;
 }
 
 MasterCli::ChildPushPeerState* MasterCli::findChildPushState_(const MacAddress& peer) {
@@ -1139,6 +1348,18 @@ bool MasterCli::onPullResponse(const MacAddress& from,
   }
 
   if (decoded.kind == PullResponseKind::Descriptor) {
+    if (decoded.descriptor.type == DescriptorResponseType::Capabilities) {
+      ProfileId profile_id = kProfileUnknown;
+      if (extractProfileIdFromCapabilities(decoded.descriptor, profile_id) &&
+          profile_id != kProfileUnknown) {
+        upsertCachedRemoteProfile_(from, profile_id);
+        MacAddress active_peer{};
+        if (resolveRuntimePeer(active_peer) && active_peer == from) {
+          remote_profile_id_ = profile_id;
+        }
+      }
+    }
+
     if (ota_push_active_ && decoded.descriptor.type == DescriptorResponseType::OtaStatus) {
       handleOtaPushStatusResponse(decoded.descriptor);
       return true;

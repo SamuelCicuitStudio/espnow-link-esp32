@@ -21,6 +21,7 @@
 #define PCAT_REMU_KEY_ILOCK "ilokj"  // Global interlock map (JSON).
 #define PCAT_REMU_KEY_SAMAC "samac"  // Global sensor-A MAC fallback.
 #define PCAT_REMU_KEY_SBMAC "sbmac"  // Global sensor-B MAC fallback.
+#define PCAT_REMU_KEY_OPERS "opers"  // Persist child output ON/OFF states in NVS.
 #define PCAT_REMU_KEY_LOOPA "loopa"  // Relay loop automation enable.
 #define PCAT_REMU_KEY_FANMD "fanmd"  // Fan mode (0:auto,1:eco,2:forced,3:stopped).
 #define PCAT_REMU_KEY_BUZEN "buzen"  // Audio ping buzzer feedback enable.
@@ -67,6 +68,7 @@
 #define PCAT_REMU_SET_ILOCK "interlock_json"
 #define PCAT_REMU_SET_SAMAC "sensor_a_mac"
 #define PCAT_REMU_SET_SBMAC "sensor_b_mac"
+#define PCAT_REMU_SET_OPERS "persist_output_state"
 #define PCAT_REMU_SET_LOOPA "LoopAuto"
 #define PCAT_REMU_SET_FANMD "fan_mode"
 #define PCAT_REMU_SET_BUZEN "buzzer_enable"
@@ -112,6 +114,7 @@
 #define PCAT_REMU_SET_RPTMS_DEF 1000U
 #define PCAT_REMU_SET_RPTMS_MIN 0U
 #define PCAT_REMU_SET_RPTMS_MAX 65535U
+#define PCAT_REMU_SET_OPERS_DEF 1
 #define PCAT_REMU_SET_LOOPA_DEF 0
 #define PCAT_REMU_SET_FANMD_DEF 0U
 #define PCAT_REMU_SET_FANMD_MIN 0U
@@ -137,7 +140,7 @@
 #define PCAT_REMU_SET_PSHS_DEF "all"
 #define PCAT_REMU_SET_TOPV_DEF 0U
 
-#define PCAT_REMU_SETMAP "device_name,channel,relay_count,split_idx,global_pulse_ms,global_hold_ms,repeat_ms,interlock_json,sensor_a_mac,sensor_b_mac,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
+#define PCAT_REMU_SETMAP "device_name,channel,relay_count,split_idx,global_pulse_ms,global_hold_ms,repeat_ms,interlock_json,sensor_a_mac,sensor_b_mac,persist_output_state,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
 #define PCAT_REMU_METMAP "relay_bitmap,relay_count,env_temp_c,uptime_ms"
 #define PCAT_REMU_EVMAP "relay_triggered,topology_applied,source_rejected"
 
@@ -154,6 +157,7 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_RPTMS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_ILOCK);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_SAMAC);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_SBMAC);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_OPERS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_LOOPA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_FANMD);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_REMU_KEY_BUZEN);

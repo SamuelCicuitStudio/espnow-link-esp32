@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 #include <unordered_map>
 
 #include "cli_helpers.hpp"
@@ -863,6 +864,167 @@ void MasterCli::printTelemetrySnapshotDescriptorResponse(const DescriptorRespons
                formatValue(b_temp, "C", 3, false, true, "0.000 C"));
       io_.writeln(border);
     }
+
+    semu_telem_child_filter_active_ = false;
+    return;
+  }
+
+  bool pms_like = (remote_profile_id_ == kProfilePms);
+  if (!pms_like) {
+    for (size_t i = 0U; i < filtered_samples.size(); ++i) {
+      const TelemetrySample* s = filtered_samples[i];
+      if (s == nullptr) continue;
+      if (s->key == "wallv" || s->key == "battv" || s->key == "walli" ||
+          s->key == "batti" || s->key == "psrc" || s->key == "trip" ||
+          s->key == "rcut") {
+        pms_like = true;
+        break;
+      }
+    }
+  }
+
+  if (pms_like) {
+    const std::vector<size_t> widths = {3U, 3U, 11U, 8U, 24U};
+    const std::string border = tableBorder(widths);
+
+    auto trimAscii = [](std::string text) -> std::string {
+      size_t begin = 0U;
+      while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+        ++begin;
+      }
+      size_t end = text.size();
+      while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1U])) != 0) {
+        --end;
+      }
+      return text.substr(begin, end - begin);
+    };
+
+    auto parseF64 = [&](const std::string& text, double& out) -> bool {
+      const std::string cleaned = trimAscii(text);
+      if (cleaned.empty()) return false;
+      char* endp = nullptr;
+      out = std::strtod(cleaned.c_str(), &endp);
+      if (endp == cleaned.c_str()) return false;
+      while (endp != nullptr && *endp != '\0') {
+        if (std::isspace(static_cast<unsigned char>(*endp)) == 0) return false;
+        ++endp;
+      }
+      return true;
+    };
+
+    auto parseU64 = [&](const std::string& text, uint64_t& out) -> bool {
+      const std::string cleaned = trimAscii(text);
+      if (cleaned.empty()) return false;
+      char* endp = nullptr;
+      const unsigned long long parsed = std::strtoull(cleaned.c_str(), &endp, 0);
+      if (endp == cleaned.c_str()) return false;
+      while (endp != nullptr && *endp != '\0') {
+        if (std::isspace(static_cast<unsigned char>(*endp)) == 0) return false;
+        ++endp;
+      }
+      out = static_cast<uint64_t>(parsed);
+      return true;
+    };
+
+    auto parseBoolLike = [&](const std::string& text, bool& out) -> bool {
+      const std::string lower = lowerAscii(trimAscii(text));
+      if (lower == "1" || lower == "true" || lower == "on" || lower == "yes") {
+        out = true;
+        return true;
+      }
+      if (lower == "0" || lower == "false" || lower == "off" || lower == "no") {
+        out = false;
+        return true;
+      }
+      return false;
+    };
+
+    auto writeRow = [&](const std::string& c0,
+                        const std::string& c1,
+                        const std::string& c2,
+                        const std::string& c3,
+                        const std::string& c4) {
+      io_.writeln("| " + fitCell(c0, widths[0]) + " | " +
+                  fitCell(c1, widths[1]) + " | " +
+                  fitCell(c2, widths[2]) + " | " +
+                  fitCell(c3, widths[3]) + " | " +
+                  fitCell(c4, widths[4]) + " |");
+    };
+
+    std::unordered_map<std::string, const TelemetrySample*> sample_by_key{};
+    sample_by_key.reserve(filtered_samples.size() * 2U + 8U);
+    for (size_t i = 0U; i < filtered_samples.size(); ++i) {
+      const TelemetrySample* s = filtered_samples[i];
+      if (s == nullptr) continue;
+      sample_by_key[s->key] = s;
+    }
+
+    auto findSample = [&](const std::string& key) -> const TelemetrySample* {
+      const auto it = sample_by_key.find(key);
+      return (it == sample_by_key.end()) ? nullptr : it->second;
+    };
+
+    auto formatFixed2 = [&](const TelemetrySample* sample) -> std::string {
+      if (sample == nullptr) return "-";
+      double value = 0.0;
+      if (!parseF64(sample->value, value)) {
+        return sample->value.empty() ? std::string("-") : sample->value;
+      }
+      char buf[48] = {0};
+      std::snprintf(buf, sizeof(buf), "%.2f", value);
+      return buf;
+    };
+
+    auto normalizeSource = [&](const TelemetrySample* sample) -> std::string {
+      if (sample == nullptr) return "-";
+      std::string src = lowerAscii(trimAscii(sample->value));
+      if (src.empty()) return "-";
+      if (src == "batt" || src == "bat" || src == "battery") return "battery";
+      if (src == "wall" || src == "grid" || src == "ac" || src == "mains") return "wall";
+      return src;
+    };
+
+    auto boolMetric = [&](const TelemetrySample* sample,
+                          const char* true_note) -> std::pair<std::string, std::string> {
+      if (sample == nullptr) return {"-", "-"};
+      bool flag = false;
+      if (!parseBoolLike(sample->value, flag)) {
+        uint64_t parsed = 0ULL;
+        if (parseU64(sample->value, parsed)) {
+          flag = (parsed != 0ULL);
+        } else {
+          return {sample->value.empty() ? std::string("-") : sample->value, "-"};
+        }
+      }
+      return {flag ? "1" : "0", flag ? std::string(true_note) : std::string("NORMAL")};
+    };
+
+    const TelemetrySample* wallv = findSample("wallv");
+    const TelemetrySample* battv = findSample("battv");
+    const TelemetrySample* walli = findSample("walli");
+    const TelemetrySample* batti = findSample("batti");
+    const TelemetrySample* psrc = findSample("psrc");
+    const TelemetrySample* trip = findSample("trip");
+    const TelemetrySample* rcut = findSample("rcut");
+
+    const std::pair<std::string, std::string> trip_render = boolMetric(trip, "TRIPPED");
+    const std::pair<std::string, std::string> rcut_render = boolMetric(rcut, "CUT");
+
+    io_.writeln("");
+    io_.writeln(border);
+    writeRow("GRP", "IDX", "SIGNAL", "VALUE", "STATE / NOTE");
+    io_.writeln(border);
+    writeRow("SYS", "[0]", "wallv", formatFixed2(wallv), "V");
+    writeRow("SYS", "[1]", "battv", formatFixed2(battv), "V");
+    io_.writeln(border);
+    writeRow("SYS", "[2]", "walli", formatFixed2(walli), "A");
+    writeRow("SYS", "[3]", "batti", formatFixed2(batti), "A");
+    io_.writeln(border);
+    writeRow("SYS", "[4]", "psrc", normalizeSource(psrc), "selected source");
+    io_.writeln(border);
+    writeRow("SYS", "[5]", "trip", trip_render.first, trip_render.second);
+    writeRow("SYS", "[6]", "rcut", rcut_render.first, rcut_render.second);
+    io_.writeln(border);
 
     semu_telem_child_filter_active_ = false;
     return;

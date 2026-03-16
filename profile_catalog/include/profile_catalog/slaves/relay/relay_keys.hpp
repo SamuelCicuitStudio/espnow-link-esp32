@@ -22,6 +22,7 @@
 #define PCAT_RELAY_KEY_SBMAC "sbmac"  // Sensor-B MAC.
 #define PCAT_RELAY_KEY_R1EN "r1en"    // Relay output-1 enable.
 #define PCAT_RELAY_KEY_R2EN "r2en"    // Relay output-2 enable.
+#define PCAT_RELAY_KEY_OPERS "opers"  // Persist output ON/OFF states in NVS.
 #define PCAT_RELAY_KEY_LOOPA "loopa"  // Relay loop automation enable.
 #define PCAT_RELAY_KEY_FANMD "fanmd"  // Fan mode (0:auto,1:eco,2:forced,3:stopped).
 #define PCAT_RELAY_KEY_BUZEN "buzen"  // Audio ping buzzer feedback enable.
@@ -54,6 +55,7 @@
 #define PCAT_RELAY_SET_SBMAC "sensor_b_mac"
 #define PCAT_RELAY_SET_R1EN "relay1_enable"
 #define PCAT_RELAY_SET_R2EN "relay2_enable"
+#define PCAT_RELAY_SET_OPERS "persist_output_state"
 #define PCAT_RELAY_SET_LOOPA "LoopAuto"
 #define PCAT_RELAY_SET_FANMD "fan_mode"
 #define PCAT_RELAY_SET_BUZEN "buzzer_enable"
@@ -98,6 +100,7 @@
 #define PCAT_RELAY_SET_RTLIM_MAX 255U
 #define PCAT_RELAY_SET_R1EN_DEF 0
 #define PCAT_RELAY_SET_R2EN_DEF 0
+#define PCAT_RELAY_SET_OPERS_DEF 1
 #define PCAT_RELAY_SET_LOOPA_DEF 0
 #define PCAT_RELAY_SET_FANMD_DEF 0U
 #define PCAT_RELAY_SET_FANMD_MIN 0U
@@ -123,7 +126,7 @@
 #define PCAT_RELAY_SET_PSHS_DEF "all"
 #define PCAT_RELAY_SET_TOPV_DEF 0U
 
-#define PCAT_RELAY_SETMAP "device_name,channel,split_idx,pulse_ms,hold_ms,interlock,rt_limit_c,sensor_a_mac,sensor_b_mac,relay1_enable,relay2_enable,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
+#define PCAT_RELAY_SETMAP "device_name,channel,split_idx,pulse_ms,hold_ms,interlock,rt_limit_c,sensor_a_mac,sensor_b_mac,relay1_enable,relay2_enable,persist_output_state,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
 #define PCAT_RELAY_METMAP "relay_bitmap,uptime_ms,env_temp_c"
 #define PCAT_RELAY_EVMAP "relay_on,relay_off,topology_applied"
 
@@ -138,6 +141,7 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_SAMAC);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_SBMAC);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_R1EN);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_R2EN);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_OPERS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_LOOPA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_FANMD);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_BUZEN);

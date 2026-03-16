@@ -10,6 +10,11 @@ Telemetry read commands:
 
 Responses decode into typed descriptor/sample payloads.
 
+CLI pull helpers:
+
+- `telem.now` for current snapshot
+- `telem.now.child <vid>` for child-scoped view on `SEMU`/`REMU` (+ global metrics)
+
 ## Push Path
 
 Push control commands:
@@ -22,6 +27,12 @@ Push control commands:
 - `PushGet`
 
 Push command envelope is `TelemetryPushCommand` with action + config.
+
+CLI push helpers:
+
+- `push.start|update|pause|resume|stop|get`
+- `push.one` / `push.id`
+- `push.child.start` / `push.child.stop` (`SEMU` and `REMU` only)
 
 ## Push Configuration
 
@@ -46,6 +57,17 @@ Modes:
 - `Periodic`
 - `OnChange`
 - `Hybrid`
+
+## Push Validation (Manager-Enforced)
+
+For `Start`/`Update` actions:
+
+- stream interval must be `200..60000 ms`
+- stream min gap must be `50..60000 ms`
+- metric count must be `<= 16`
+- metrics must resolve to known profile telemetry keys/IDs
+- duplicate keys are rejected
+- all-disabled metric sets are rejected
 
 ## Frontend Helper Coverage
 

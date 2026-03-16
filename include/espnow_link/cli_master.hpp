@@ -242,6 +242,11 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
     uint32_t remu_gap_ms = 200U;
   };
 
+  struct PeerProfileCacheEntry {
+    MacAddress peer{};
+    ProfileId profile_id = kProfileUnknown;
+  };
+
   enum class PagedFetchKind : uint8_t {
     None = 0,
     Capabilities,
@@ -274,8 +279,15 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
   bool sendDescriptorQuery(const std::string& cmd);
   void setAutoPull(bool enabled, uint32_t interval_ms);
   void clearPeerSessionState_();
+  void clearActiveTarget_();
+  bool setActiveTargetBySelector_(const std::string& selector, MacAddress* out_peer = nullptr);
   bool resolveRuntimePeer(MacAddress& out_peer) const;
   bool hasRuntimePeer() const;
+  bool getCachedRemoteProfile_(const MacAddress& peer, ProfileId& out_profile) const;
+  void upsertCachedRemoteProfile_(const MacAddress& peer, ProfileId profile_id);
+  void eraseCachedRemoteProfile_(const MacAddress& peer);
+  void refreshRuntimeProfileHint_();
+  bool ensureRuntimeProfileKnown_(ProfileId& out_profile, bool trigger_probe_on_miss = true);
   bool submitRuntimeTargeted_(ManagementController& controller,
                               uint16_t cmd_id,
                               const std::vector<uint8_t>& payload = {},
@@ -386,6 +398,9 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
   uint32_t correlation_id_ = 100;
   bool command_target_override_active_ = false;
   MacAddress command_target_override_peer_{};
+  bool sticky_target_active_ = false;
+  MacAddress sticky_target_peer_{};
+  std::vector<PeerProfileCacheEntry> peer_profile_cache_{};
 
   MasterAutoPull auto_pull_{};
   bool auto_pull_enabled_ = false;

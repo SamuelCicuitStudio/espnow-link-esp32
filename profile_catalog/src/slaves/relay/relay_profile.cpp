@@ -66,6 +66,7 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0108, PCAT_RELAY_SET_R1EN, espnow_link::SettingValueType::Bool, PCAT_RELAY_KEY_R1EN, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0109, PCAT_RELAY_SET_R2EN, espnow_link::SettingValueType::Bool, PCAT_RELAY_KEY_R2EN, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0301, PCAT_RELAY_SET_LOOPA, espnow_link::SettingValueType::Bool, PCAT_RELAY_KEY_LOOPA, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {0x030B, PCAT_RELAY_SET_OPERS, espnow_link::SettingValueType::Bool, PCAT_RELAY_KEY_OPERS, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x030A, PCAT_RELAY_SET_FANMD, espnow_link::SettingValueType::Int, PCAT_RELAY_KEY_FANMD, "0", "type=u32;rw=1;min=0;max=3;enum=0:auto|1:eco|2:forced|3:stopped", true, PCAT_RELAY_SET_FANMD_MIN, PCAT_RELAY_SET_FANMD_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0308, PCAT_RELAY_SET_BUZEN, espnow_link::SettingValueType::Bool, PCAT_RELAY_KEY_BUZEN, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0309, PCAT_RELAY_SET_LEDFB, espnow_link::SettingValueType::Bool, PCAT_RELAY_KEY_LEDFB, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -400,6 +401,17 @@ bool RelayAppDescriptorProvider::setSetting(const std::string& key, const std::s
       if (!parseBool(value, parsed)) {
         out_message = std::string(def->key) + " expects bool";
         return false;
+      }
+      const bool is_output_state =
+          (key == PCAT_RELAY_SET_R1EN || key == PCAT_RELAY_SET_R2EN);
+      if (is_output_state) {
+        const bool persist_cfg = loadBool_(PCAT_RELAY_KEY_OPERS, PCAT_RELAY_SET_OPERS_DEF != 0);
+        const bool loop_auto = loadBool_(PCAT_RELAY_KEY_LOOPA, PCAT_RELAY_SET_LOOPA_DEF != 0);
+        const bool persist_effective = persist_cfg && !loop_auto;
+        if (!persist_effective) {
+          out_message = std::string(def->key) + " runtime-only update (persist disabled)";
+          return finalizeSettingChange_(key, value, true, out_message);
+        }
       }
       const bool ok = nvs_.putBool(def->nvs, parsed);
       out_message = ok ? std::string(def->key) + " updated" : std::string(def->key) + " persist failed";

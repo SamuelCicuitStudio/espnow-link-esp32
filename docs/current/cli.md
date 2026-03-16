@@ -1,29 +1,38 @@
 # CLI Surface
 
-`MasterCli` is the library reference operator frontend for master-side control.
+`MasterCli` is the reference operator console for the master role.
 
 ## Runtime Integration
 
-`MasterCli` issues typed management commands through `ManagementController`.
+`MasterCli` sends typed management commands through `ManagementController` (queue/runtime path) with source tag `ManagementSource::Cli`.
 
-Supported backends:
+## Targeting Model (Current)
 
-- Queue mode (`ManagementQueueTransport` + `ManagementRuntime`)
+Peer-bound commands support two targeting modes:
 
-CLI uses source `ManagementSource::Cli`, so responses/events stay source-isolated from Wi-Fi/BLE/custom frontends.
+- Sticky runtime target:
+  - `active <paired_index|MAC>`
+  - `active`
+  - `active clear`
+- One-shot prefix override:
+  - `<paired_index> <command>`
+  - `<MAC> <command>`
 
-## Targeting Rules
+Rules:
 
-Peer-bound command selectors:
+- Prefix override applies only to that command.
+- Sticky `active` target is reused by subsequent peer-bound commands.
+- If sticky target is removed from persisted peers, CLI clears it automatically.
 
-- `<paired_index> <command>`
-- `<MAC> <command>`
+Profile resolution behavior:
 
-Peer-bound CLI commands require explicit selector prefix (no persistent runtime target override).
+- `active` show/set resolves profile from cached/hinted runtime info.
+- `active` does not trigger a `caps` pull/probe.
+- Commands that require a resolved profile can queue a probe when unknown.
 
 ## Command Topics
 
-Help topics exposed by CLI:
+`help` topics:
 
 - `core`
 - `paired`
@@ -41,92 +50,127 @@ Help topics exposed by CLI:
 - `sd`
 - `ota`
 
-These map to the same management commands available through `ManagementController`.
+## Command Highlights
 
-## Deterministic Coexistence With API Frontends
+Core:
 
-When CLI and frontend API are both active:
+- `list`
+- `paired`
+- `status`
+- `active [<index|mac>|clear]`
+- `live enable|disable|status`
+- `cli on|off|status`
 
-- use explicit peer selectors for mutating peer commands
-- track `req_id` and terminal events (`CmdDone`/`CmdFail`/`Timeout`)
-- avoid issuing overlapping mutating commands for the same peer from both paths
+Pairing:
 
-## Interfaces
+- `pair <index|mac>`
+- `unpair`
+- `remove [index|mac|slave]`
 
-- `IMasterCliIo`
-- `IMasterCliActions`
-- `IMasterOtaFrontendHook`
+Descriptor/profile:
+
+- `desc`
+- `caps`
+- `telem`
+- `telem.now`
+- `telem.now.child <vid>`
+- `live`
+- `ping`
+
+Settings:
+
+- `settings`
+- `settings.full`
+- `settings.raw`
+- `get <key>`
+- `get.id <id>`
+- `set <key>=<value>`
+- `set.id <id>=<value>`
+
+Push:
+
+- `push.start [mode] [interval_ms] [delta_abs] [gap_ms]`
+- `push.update [mode] [interval_ms] [delta_abs] [gap_ms]`
+- `push.pause|resume|stop|get`
+- `push.one <metric_key> <mode> <interval_ms> <delta_abs> <gap_ms>`
+- `push.id <metric_id> <mode> <interval_ms> <delta_abs> <gap_ms>`
+- `push.child.start <vid> [mode] [interval_ms] [delta_abs] [gap_ms]`
+- `push.child.stop <vid>`
+- `autopull on [ms] | autopull off`
+
+Topology (operator/editor/file):
+
+- `topology.status`
+- `topology.slots [committed|staged]`
+- `topology.trigger <idx> <forward|reverse|1|2> [delay_ms] [hold_ms] [src_vid]`
+- `topology.stage.hex <hex>`
+- `topology.stage.file <path>`
+- `topology.commit`
+- `topology.apply.hex <hex>`
+- `topology.apply.file <path>`
+- `topology.plan.file <path>`
+- `topology.deploy.file <path>`
+- `topology.edit.*` workflow (`new|add|del|clear|show|validate|save|load`)
+
+Storage/logger/OTA commands are available via `help logger`, `help sd`, `help ota`.
+
+## Profile-Aware CLI Behavior
+
+`settings.full`:
+
+- Pulls full profile settings by iterating the active profile setting schema.
+- If profile is unknown, it queues a profile probe and asks to retry.
+
+`push.start`/`push.update`:
+
+- Builds metrics from the active profile telemetry schema.
+- If profile is unknown, it queues a profile probe and asks to retry.
+
+`push.child.start`/`push.child.stop`:
+
+- Valid only for `SEMU` and `REMU`.
+- Uses child VID ranges:
+  - `SEMU`: `0..7`
+  - `REMU`: `0..15`
+
+`telem.now.child`:
+
+- Child-filtered telemetry view for `SEMU`/`REMU` plus global metrics.
+- If profile is unresolved, fallback VID range is `0..15` until profile resolves.
 
 ## Render Output Contract (Current)
 
-CLI text output is now normalized for operator readability.
-This is a presentation contract only; command IDs, payloads, and management statuses are unchanged.
+CLI text formatting is presentation-only. Management payloads/statuses are unchanged.
 
-### Device Descriptor
+Descriptor/settings:
 
-`desc` prints a fixed 2-column table:
+- `desc`: compact identity table
+- `caps`: grouped sections (`Identity`, `Counts`, `Maps`, `Features`, `Other`)
+- `settings`: sectioned setting tables with typed columns
 
-```text
-[MASTER][DESC] Device
-+-------+----------------------+
-| Type  | PMS                  |
-| ID    | 8C:BF:EA:84:E7:20    |
-| Name  | PMS-Node             |
-| HW    | PMS-HW1              |
-| SW    | 3.1.1                |
-| Build | pms1-311-260313082004|
-+-------+----------------------+
-```
+Telemetry snapshot (`telem.now`) role-specific rendering:
 
-### Capabilities Descriptor
+- `SENS`/`SEMU`: environment block + A/B TF-Luna rows (mm/flux/temp)
+- `RELAY`/`REMU`: system rows + per-child output state rows
+- `PMS`: system power table (`wallv`, `battv`, `walli`, `batti`, `psrc`, `trip`, `rcut`)
+- fallback: flat key/value list when role pattern is unknown
 
-`caps` prints one header plus grouped sections:
+## Push Validation Limits (Enforced by Manager)
 
-```text
-[MASTER][DESC] Capabilities source=provider snapshot=1476763498
+For `PushStart`/`PushUpdate`:
 
-[Identity]
-Key             | Value
----------------+----------------------------------------------------------
-Profile         | PMS
-Profile ID      | 1
-Schema Rev      | 1
-Schema Hash     | pms001
-```
+- stream interval: `200..60000 ms`
+- stream min gap: `50..60000 ms`
+- max metrics per stream: `16`
+- duplicate/unknown metrics are rejected
 
-Additional sections are emitted in this order when values exist:
+## Frontend Note
 
-- `[Counts]`
-- `[Maps]`
-- `[Features]`
-- `[Other]` (only for unmapped capability keys)
-
-### Settings Descriptor
-
-`settings`/`settings.raw` print as sectioned tables under a normalized header:
-
-```text
-[MASTER][SET] Settings snapshot=<id> source=<source> total=<n>
-```
-
-Sections are grouped by setting domain (for example `General`, `UI / Feedback`, `Protection`, `Topology`, ...).
-
-### Storage Info
-
-`sd.info` prints compact 3-line summary:
-
-```text
-[MASTER][STORAGE] SD CARD | READY | SDSC | ROOT:/ | CWD:/
-[MASTER][STORAGE] FREE: 232.50 MB | USED: 5.38/237.88 MB
-[MASTER][STORAGE] USAGE [#-------------------] 2.26%
-```
-
-### Frontend Note
-
-Frontend/API integrations must consume typed management/descriptor data and should not parse CLI text.
+Frontend/API clients should consume typed management/descriptors and never parse CLI text output.
 
 ## Code Anchors
 
 - `include/espnow_link/cli_master.hpp`
 - `src/cli/cli_master.cpp`
 - `src/cli/cli_dispatch.cpp`
+- `src/cli/cli_render.cpp`
