@@ -390,7 +390,8 @@ bool MasterNodeBootstrap::begin(const Config& cfg) {
                                      cfg_.local_storage,
                                      cfg_.ota_push_storage,
                                      cli_management_transport,
-                                     management_runtime_.get());
+                                     management_runtime_.get(),
+                                     cfg_.cli_traffic_policy);
   management_->bindMasterCli(cli_.get());
 
   control_mux_.bind(cli_.get());

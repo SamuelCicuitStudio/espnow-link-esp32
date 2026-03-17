@@ -102,6 +102,13 @@ class IMasterOtaFrontendHook {
  */
 class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFrontendHook {
  public:
+  /** @brief CLI traffic source policy when management queue path is available. */
+  enum class CliTrafficPolicy : uint8_t {
+    Auto = 0,         ///< `ManagementOnly` when queue transport exists, else `LegacyObserver`.
+    ManagementOnly,   ///< Process only CLI-owned queue traffic; keep observer path quiet.
+    LegacyObserver,   ///< Preserve legacy mixed observer + mailbox behavior.
+  };
+
   /**
    * @brief Construct master CLI adapter.
    * @param manager Manager instance.
@@ -126,7 +133,15 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
             IStorageExplorerProvider* local_storage = nullptr,
             IOtaStorageBackend* ota_push_storage = nullptr,
             ManagementQueueTransport* management_transport = nullptr,
-            ManagementRuntime* management_runtime = nullptr);
+            ManagementRuntime* management_runtime = nullptr,
+            CliTrafficPolicy traffic_policy = CliTrafficPolicy::Auto);
+
+  /** @brief Set CLI traffic policy at runtime. */
+  void setTrafficPolicy(CliTrafficPolicy policy) { traffic_policy_ = policy; }
+  /** @brief Read configured CLI traffic policy. */
+  CliTrafficPolicy trafficPolicy() const { return traffic_policy_; }
+  /** @brief Read effective CLI traffic policy after auto-resolution. */
+  CliTrafficPolicy effectiveTrafficPolicy() const;
 
   /** @brief Current master CLI enabled state. */
   bool cliEnabled() const { return cli_enabled_; }
@@ -301,6 +316,12 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
                                  uint32_t* out_req_id = nullptr,
                                  uint32_t timeout_ms = 0U,
                                  bool apply_runtime_target = true) const;
+  bool usesManagementOnlyTraffic_() const;
+  void noteCliOwnedReqId_(uint32_t req_id) const;
+  bool isCliOwnedReqId_(uint32_t req_id) const;
+  bool shouldProcessObserverPullResponse_(uint32_t corr_id) const;
+  bool shouldProcessManagementMailboxResponse_(const ManagementResponse& resp) const;
+  bool shouldProcessManagementMailboxEvent_(const ManagementEvent& evt) const;
   ChildPushPeerState* findChildPushState_(const MacAddress& peer);
   const ChildPushPeerState* findChildPushState_(const MacAddress& peer) const;
   ChildPushPeerState& ensureChildPushState_(const MacAddress& peer);
@@ -512,6 +533,15 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
   uint8_t semu_telem_child_filter_max_vid_ = 7U;
   ProbePendingKind probe_pending_kind_ = ProbePendingKind::None;
   uint32_t probe_sent_ms_ = 0;
+  CliTrafficPolicy traffic_policy_ = CliTrafficPolicy::Auto;
+  size_t cli_owned_req_ids_max_ = 192U;
+  mutable std::deque<uint32_t> cli_owned_req_ids_{};
+  uint32_t observer_ignored_pull_responses_ = 0U;
+  uint32_t observer_ignored_events_ = 0U;
+  uint32_t mailbox_ignored_responses_ = 0U;
+  uint32_t mailbox_ignored_events_ = 0U;
+  uint32_t mailbox_processed_responses_ = 0U;
+  uint32_t mailbox_processed_events_ = 0U;
   mutable SubmitDispatchSnapshot dispatch_snapshot_{};
 };
 

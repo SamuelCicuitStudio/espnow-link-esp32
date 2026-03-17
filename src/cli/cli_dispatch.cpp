@@ -1420,6 +1420,9 @@ bool MasterCli::submitRuntimeTargeted_(ManagementController& controller,
     submit_options.target_peer = runtime_peer;
   }
   const ManagementController::SubmitResult submit_result = controller.submit(cmd_id, payload, submit_options);
+  if (submit_result.accepted) {
+    noteCliOwnedReqId_(submit_result.req_id);
+  }
   captureDispatchSnapshot_(submit_result.accepted,
                            submit_result.cmd_id,
                            submit_result.req_id,
@@ -7260,8 +7263,14 @@ void MasterCli::pumpManagementMailbox() {
     }
     return out;
   };
+  const bool management_only = usesManagementOnlyTraffic_();
   ManagementResponse resp{};
   while (management_transport_->pollResponse(resp)) {
+    if (management_only && !shouldProcessManagementMailboxResponse_(resp)) {
+      ++mailbox_ignored_responses_;
+      continue;
+    }
+    ++mailbox_processed_responses_;
     if (resp.cmd_id == static_cast<uint16_t>(ManagementCommandId::LiveMonitorStatusGet)) {
       const bool show_live_status =
           live_monitor_status_pending_ &&
@@ -7434,6 +7443,11 @@ void MasterCli::pumpManagementMailbox() {
 
   ManagementEvent evt{};
   while (management_transport_->pollEvent(evt)) {
+    if (management_only && !shouldProcessManagementMailboxEvent_(evt)) {
+      ++mailbox_ignored_events_;
+      continue;
+    }
+    ++mailbox_processed_events_;
     if (evt.event_id == ManagementEventId::PeerLivenessTransition) {
       ManagementPeerLivenessTransitionPayload transition{};
       if (management_utils::parsePeerLivenessTransitionPayload(evt.payload, transition)) {
@@ -7676,12 +7690,27 @@ void MasterCli::pumpManagementMailbox() {
 }
 
 void MasterCli::printQueueStatus() const {
+  const char* policy = "legacy";
+  const CliTrafficPolicy effective = effectiveTrafficPolicy();
+  if (effective == CliTrafficPolicy::ManagementOnly) {
+    policy = "mgmt_only";
+  } else if (effective == CliTrafficPolicy::Auto) {
+    policy = "auto";
+  }
   writef("[MASTER][CLI] queue depth=%u max=%u sent=%lu fail=%lu drop=%lu",
          static_cast<unsigned int>(descriptor_request_queue_.size()),
          static_cast<unsigned int>(descriptor_queue_max_),
          static_cast<unsigned long>(descriptor_queue_sent_count_),
          static_cast<unsigned long>(descriptor_queue_fail_count_),
          static_cast<unsigned long>(descriptor_queue_drop_count_));
+  writef("[MASTER][CLI] traffic policy=%s mailbox(resp=%lu ignored=%lu evt=%lu ignored=%lu) observer(ignored_resp=%lu ignored_evt=%lu)",
+         policy,
+         static_cast<unsigned long>(mailbox_processed_responses_),
+         static_cast<unsigned long>(mailbox_ignored_responses_),
+         static_cast<unsigned long>(mailbox_processed_events_),
+         static_cast<unsigned long>(mailbox_ignored_events_),
+         static_cast<unsigned long>(observer_ignored_pull_responses_),
+         static_cast<unsigned long>(observer_ignored_events_));
 }
 
 void MasterCli::setAutoPull(bool enabled, uint32_t interval_ms) {
@@ -7982,11 +8011,17 @@ void MasterCli::tick(uint32_t now_ms) {
 
   const MacAddress poll_peer = auto_pull_target_peer_;
   const bool can_poll = auto_pull_has_target_peer_;
+  const uint32_t corr_before_autopull = correlation_id_;
   MasterAutoPullTickResult r = auto_pull_.tick(&pull_,
                                                 poll_peer,
                                                 auto_pull_enabled_ && can_poll,
                                                 now_ms,
                                                 correlation_id_);
+  uint32_t corr_cursor = corr_before_autopull;
+  while (corr_cursor != correlation_id_) {
+    noteCliOwnedReqId_(corr_cursor);
+    ++corr_cursor;
+  }
   if (r.offline_timeout) {
     io_.writeln("[MASTER][LIVE] timeout waiting for liveness response; slave offline");
   }

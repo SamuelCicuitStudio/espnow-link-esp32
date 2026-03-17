@@ -205,6 +205,7 @@ class MasterNodeBootstrap {
     bool print_help_on_bringup = true;
     bool print_startup_summary = true;
     const char* log_prefix = "MASTER";
+    MasterCli::CliTrafficPolicy cli_traffic_policy = MasterCli::CliTrafficPolicy::Auto;
     std::vector<IManagementTransport*> management_transports{};
   };
 

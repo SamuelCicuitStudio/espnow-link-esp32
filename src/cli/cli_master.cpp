@@ -323,7 +323,8 @@ MasterCli::MasterCli(EspNowManager& manager,
                      IStorageExplorerProvider* local_storage,
                      IOtaStorageBackend* ota_push_storage,
                      ManagementQueueTransport* management_transport,
-                     ManagementRuntime* management_runtime)
+                     ManagementRuntime* management_runtime,
+                     CliTrafficPolicy traffic_policy)
     : manager_(manager),
       pull_(pull),
       io_(io),
@@ -336,8 +337,96 @@ MasterCli::MasterCli(EspNowManager& manager,
       management_runtime_(management_runtime),
       remote_log_store_(remote_log_store),
       local_storage_(local_storage),
-      ota_push_storage_(ota_push_storage) {
+      ota_push_storage_(ota_push_storage),
+      traffic_policy_(traffic_policy) {
   loadCliEnabled();
+}
+
+MasterCli::CliTrafficPolicy MasterCli::effectiveTrafficPolicy() const {
+  if (traffic_policy_ != CliTrafficPolicy::Auto) {
+    return traffic_policy_;
+  }
+  return (management_transport_ != nullptr) ? CliTrafficPolicy::ManagementOnly
+                                            : CliTrafficPolicy::LegacyObserver;
+}
+
+bool MasterCli::usesManagementOnlyTraffic_() const {
+  return effectiveTrafficPolicy() == CliTrafficPolicy::ManagementOnly;
+}
+
+void MasterCli::noteCliOwnedReqId_(uint32_t req_id) const {
+  if (req_id == 0U) {
+    return;
+  }
+  for (const uint32_t existing : cli_owned_req_ids_) {
+    if (existing == req_id) {
+      return;
+    }
+  }
+  cli_owned_req_ids_.push_back(req_id);
+  while (cli_owned_req_ids_.size() > cli_owned_req_ids_max_) {
+    cli_owned_req_ids_.pop_front();
+  }
+}
+
+bool MasterCli::isCliOwnedReqId_(uint32_t req_id) const {
+  if (req_id == 0U) {
+    return false;
+  }
+  for (const uint32_t owned : cli_owned_req_ids_) {
+    if (owned == req_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MasterCli::shouldProcessObserverPullResponse_(uint32_t corr_id) const {
+  if (!usesManagementOnlyTraffic_()) {
+    return true;
+  }
+  return isCliOwnedReqId_(corr_id);
+}
+
+bool MasterCli::shouldProcessManagementMailboxResponse_(const ManagementResponse& resp) const {
+  if (!usesManagementOnlyTraffic_()) {
+    return true;
+  }
+  if (resp.source == ManagementSource::Cli) {
+    return true;
+  }
+  if (resp.source == ManagementSource::Unknown) {
+    if (isCliOwnedReqId_(resp.req_id)) {
+      return true;
+    }
+    if (live_monitor_status_pending_ && resp.req_id == live_monitor_status_req_id_) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MasterCli::shouldProcessManagementMailboxEvent_(const ManagementEvent& evt) const {
+  if (!usesManagementOnlyTraffic_()) {
+    return true;
+  }
+  if (evt.source == ManagementSource::Cli) {
+    return true;
+  }
+  if (evt.source != ManagementSource::Unknown) {
+    return false;
+  }
+  if (isCliOwnedReqId_(evt.req_id)) {
+    return true;
+  }
+  if (ota_push_active_ || ota_update_pipeline_active_) {
+    if (evt.event_id == ManagementEventId::OtaTransferReady ||
+        evt.event_id == ManagementEventId::OtaTransferStatus ||
+        evt.event_id == ManagementEventId::OtaBootComplete) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::string MasterCli::shortOtaName(const std::string& input_name) {
@@ -1160,6 +1249,11 @@ void MasterCli::onEvent(const Event& e) {
     return;
   }
 
+  if (usesManagementOnlyTraffic_()) {
+    ++observer_ignored_events_;
+    return;
+  }
+
   if (e.type == Event::Type::Paired) {
     auto_pull_.resetState();
     if (cli_enabled_ && logEnabled(CliLogLevel::Info)) {
@@ -1330,6 +1424,10 @@ bool MasterCli::onPullResponse(const MacAddress& from,
                                uint32_t corr_id,
                                const uint8_t* payload,
                                size_t len) {
+  if (!shouldProcessObserverPullResponse_(corr_id)) {
+    ++observer_ignored_pull_responses_;
+    return true;
+  }
   if (!cli_enabled_) {
     return true;
   }
