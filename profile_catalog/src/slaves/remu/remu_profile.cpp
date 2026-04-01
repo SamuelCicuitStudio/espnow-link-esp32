@@ -95,6 +95,7 @@ constexpr SettingDef kSettingDefs[] = {
     {0x030B, PCAT_REMU_SET_OPERS, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_OPERS, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x030A, PCAT_REMU_SET_FANMD, espnow_link::SettingValueType::Int, PCAT_REMU_KEY_FANMD, "0", "type=u32;rw=1;min=0;max=3;enum=0:auto|1:eco|2:forced|3:stopped", true, PCAT_REMU_SET_FANMD_MIN, PCAT_REMU_SET_FANMD_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0308, PCAT_REMU_SET_BUZEN, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_BUZEN, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {0x030C, PCAT_REMU_SET_CLIBD, espnow_link::SettingValueType::Int, PCAT_REMU_KEY_CLIBD, "115200", "type=u32;rw=1;enum=9600|19200|38400|57600|74880|115200|230400|250000|460800|921600", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0309, PCAT_REMU_SET_LEDFB, espnow_link::SettingValueType::Bool, PCAT_REMU_KEY_LEDFB, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0310, PCAT_REMU_SET_RGBIDL, espnow_link::SettingValueType::String, PCAT_REMU_KEY_RGBIDL, PCAT_REMU_SET_RGBIDL_DEF, "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0311, PCAT_REMU_SET_RGBALT, espnow_link::SettingValueType::String, PCAT_REMU_KEY_RGBALT, PCAT_REMU_SET_RGBALT_DEF, "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -129,7 +130,7 @@ constexpr ChildSettingDef kChildSettingDefs[] = {
     {"split_idx", espnow_link::SettingValueType::Int, PCAT_REMU_CKEY_SPLT, "0", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_RELAY_SET_SPLIT_MIN, PCAT_RELAY_SET_SPLIT_MAX, false, 0.0f, 0.0f, nullptr},
     {"pulse_ms", espnow_link::SettingValueType::Int, PCAT_REMU_CKEY_PULS, "500", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_RELAY_SET_PULSE_MIN, PCAT_RELAY_SET_PULSE_MAX, false, 0.0f, 0.0f, nullptr},
     {"hold_ms", espnow_link::SettingValueType::Int, PCAT_REMU_CKEY_HOLD, "30000", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_RELAY_SET_HOLD_MIN, PCAT_RELAY_SET_HOLD_MAX, false, 0.0f, 0.0f, nullptr},
-    {"interlock", espnow_link::SettingValueType::Bool, PCAT_REMU_CKEY_ILOK, "1", "type=bool;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {"interlock", espnow_link::SettingValueType::Bool, PCAT_REMU_CKEY_ILOK, "0", "type=bool;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"rt_limit_c", espnow_link::SettingValueType::Int, PCAT_REMU_CKEY_RTLM, "80", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_RELAY_SET_RTLIM_MIN, PCAT_RELAY_SET_RTLIM_MAX, false, 0.0f, 0.0f, nullptr},
     {"sensor_a_mac", espnow_link::SettingValueType::String, PCAT_REMU_CKEY_SAMA, "00:00:00:00:00:00", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"sensor_b_mac", espnow_link::SettingValueType::String, PCAT_REMU_CKEY_SBMA, "00:00:00:00:00:00", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -207,6 +208,17 @@ bool parseU32(const std::string& value, uint32_t& out) {
   }
   out = static_cast<uint32_t>(parsed);
   return true;
+}
+
+bool isSupportedCliBaud(const uint32_t baud) {
+  static constexpr uint32_t kSupported[] = {
+      9600U, 19200U, 38400U, 57600U, 74880U, 115200U, 230400U, 250000U, 460800U, 921600U};
+  for (const uint32_t candidate : kSupported) {
+    if (baud == candidate) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool parseFloat(const std::string& value, float& out) {
@@ -547,6 +559,20 @@ bool RemuAppDescriptorProvider::getSettingById(uint16_t setting_id, espnow_link:
 }
 
 bool RemuAppDescriptorProvider::setSetting(const std::string& key, const std::string& value, std::string& out_message) {
+  if (key == PCAT_REMU_SET_CLIBD) {
+    uint32_t baud = 0U;
+    if (!parseU32(value, baud) || !isSupportedCliBaud(baud)) {
+      out_message = "cli_baud expects one of: 9600|19200|38400|57600|74880|115200|230400|250000|460800|921600";
+      return false;
+    }
+    const bool ok = nvs_.putU32(PCAT_REMU_KEY_CLIBD, baud);
+    out_message = ok ? "cli_baud updated (restart required)" : "cli_baud persist failed";
+    if (cfg_.setting_feedback != nullptr) {
+      cfg_.setting_feedback(cfg_.runtime_user, key, value, ok);
+    }
+    return ok;
+  }
+
   const SettingDef* def = nullptr;
   for (const auto& s : kSettingDefs) {
     if (key == s.key) {

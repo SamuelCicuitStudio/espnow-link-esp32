@@ -48,6 +48,47 @@ For deterministic coexistence between API and CLI:
 - Treat deferred operations as complete only after terminal response/event
 - Confirm setting writes with readback when strict state convergence is required
 
+## API-Only Fast Path for ICM UI
+
+To keep ICM UI updates fast and deterministic, use the frontend adapter API path only.
+
+- UI/API path:
+  - `ManagementFrontendAdapter` -> `ManagementController` -> `ManagementService`/runtime
+- Do not depend on CLI parsing/printing for UI data population.
+- Do not route non-topology profiles through topology commands.
+
+Current-settings fetch contract per profile (optimized path):
+
+1. target peer/profile once
+2. `settingsBundleRefresh(peer, ...)` or `nodeBundleGet(peer, mask, ...)` once per refresh action
+3. `settingsBundleGet(peer, out, ...)` (or `settingsGetResolved(...)`) for authoritative read
+4. `cachedSettingsResolved(peer, out)` for immediate re-render without re-pull
+
+Cache policy migration (library-first, in progress):
+
+1. open-settings path should be cache-only by default
+2. explicit refresh should be the only force-pull path
+3. per-slave cache state should be tracked (`empty|warming|partial|ready|stale|error`)
+4. startup reconcile should hydrate cache for already-paired peers (not only fresh pair events)
+5. settings writes should send/apply changed keys only
+
+Role scope:
+
+- topology commands: `SEMU`, `SENS`, `RELAY`, `REMU` only
+- generic settings fetch: `PMS`, `SEMU`, `SENS`, `RELAY`, `REMU`, `LOCK_ALARM`
+
+Latency/throughput guidance for UI:
+
+- Prefer one `NodeBundleGet(settings)` refresh over multiple per-key `SettingGet` calls.
+- Reuse cached resolved settings during dialog open/edit cycles.
+- Trigger fresh pull on explicit refresh/apply, not on every render tick.
+- Keep telemetry pull independent from settings pull to avoid UI contention.
+
+Reference plans for this fix direction:
+
+- `docs/optimization/slave-settings-cache-policy-and-delta-write-fix-plan.md` (primary)
+- `docs/optimization/slave-settings-fetch-api-alignment-plan.md` (NodeBundle transport alignment)
+
 ## CLI Quick Reference (Current)
 
 Master CLI targeting now supports both sticky and one-shot selection:

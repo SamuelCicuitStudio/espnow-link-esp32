@@ -72,7 +72,7 @@ bool enumContains(const char* enum_values, const std::string& value) {
 
 constexpr SettingDef kSettingDefs[] = {
     {0x0001, PCAT_ICM_SET_DNAME, espnow_link::SettingValueType::String, PCAT_ICM_KEY_DNAME, PCAT_ICM_SET_DNAME_DEF, PCAT_ICM_DESC_SET_DNAME, false, 0U, 0U, nullptr},
-    {0x0301, PCAT_ICM_SET_MXPRS, espnow_link::SettingValueType::Int, PCAT_ICM_KEY_MXPRS, "14", PCAT_ICM_DESC_SET_MXPRS, true, PCAT_ICM_SET_MXPRS_MIN, PCAT_ICM_SET_MXPRS_MAX, nullptr},
+    {0x0301, PCAT_ICM_SET_MXPRS, espnow_link::SettingValueType::Int, PCAT_ICM_KEY_MXPRS, "15", PCAT_ICM_DESC_SET_MXPRS, true, PCAT_ICM_SET_MXPRS_MIN, PCAT_ICM_SET_MXPRS_MAX, nullptr},
     {0x0302, PCAT_ICM_SET_LIVEN, espnow_link::SettingValueType::Bool, PCAT_ICM_KEY_LIVEN, "1", PCAT_ICM_DESC_SET_LIVEN, false, 0U, 0U, nullptr},
     {0x0303, PCAT_ICM_SET_DISCA, espnow_link::SettingValueType::Bool, PCAT_ICM_KEY_DISCA, "0", PCAT_ICM_DESC_SET_DISCA, false, 0U, 0U, nullptr},
     {0x0304, PCAT_ICM_SET_QBUDG, espnow_link::SettingValueType::Int, PCAT_ICM_KEY_QBUDG, "48", PCAT_ICM_DESC_SET_QBUDG, true, PCAT_ICM_SET_QBUDG_MIN, PCAT_ICM_SET_QBUDG_MAX, nullptr},
@@ -297,7 +297,7 @@ bool IcmAppDescriptorProvider::getDeviceDescriptor(espnow_link::DeviceDescriptor
 
 bool IcmAppDescriptorProvider::getCapabilities(std::vector<espnow_link::CapabilityDescriptor>& out) {
   out.clear();
-  out.push_back({"multi_slave_14", "Hard max 14 paired peers, no balancing"});
+  out.push_back({"multi_slave_15", "Hard max 15 paired peers, no balancing"});
   out.push_back({"targeted_commands", "Per-slave control via index or mac"});
   out.push_back({"output_onoff", "Direct ON/OFF control for RELAY outputs and REMU child outputs"});
   out.push_back({"liveness_monitor", "Change-only online/offline transitions"});

@@ -34,19 +34,50 @@ namespace espnow_link {
  */
 class ControlPlaneForwarder : public IControlPlane {
  public:
-  /** @brief Bind target control-plane endpoint (nullable). */
-  void bind(IControlPlane* target) { target_ = target; }
+  /** @brief Bind one target and clear any previous target list. */
+  void bind(IControlPlane* target) {
+    targets_.clear();
+    if (target != nullptr) {
+      targets_.push_back(target);
+    }
+  }
+  /** @brief Add one additional target control-plane endpoint (nullable ignored). */
+  void add(IControlPlane* target) {
+    if (target == nullptr) {
+      return;
+    }
+    for (IControlPlane* existing : targets_) {
+      if (existing == target) {
+        return;
+      }
+    }
+    targets_.push_back(target);
+  }
+  /** @brief Clear target control-plane endpoint list. */
+  void clear() { targets_.clear(); }
 
   bool onPullRequest(const MacAddress& from, uint32_t corr_id, const uint8_t* payload, size_t len) override {
-    return (target_ != nullptr) ? target_->onPullRequest(from, corr_id, payload, len) : true;
+    bool ok = true;
+    for (IControlPlane* target : targets_) {
+      if (target != nullptr) {
+        ok = target->onPullRequest(from, corr_id, payload, len) && ok;
+      }
+    }
+    return ok;
   }
 
   bool onPullResponse(const MacAddress& from, uint32_t corr_id, const uint8_t* payload, size_t len) override {
-    return (target_ != nullptr) ? target_->onPullResponse(from, corr_id, payload, len) : true;
+    bool ok = true;
+    for (IControlPlane* target : targets_) {
+      if (target != nullptr) {
+        ok = target->onPullResponse(from, corr_id, payload, len) && ok;
+      }
+    }
+    return ok;
   }
 
  private:
-  IControlPlane* target_ = nullptr;
+  std::vector<IControlPlane*> targets_{};
 };
 
 /**
@@ -302,6 +333,8 @@ class MasterNodeBootstrap {
    *
    * Returns an existing owned transport when present. Otherwise creates one
    * with the requested queue sizing and registers it on runtime.
+   * Request overflow policy is always `RejectNew`; `drop_oldest_when_full`
+   * applies to response/event channels only.
    */
   ManagementQueueTransport* ensureOwnedQueueTransport(ManagementSource source,
                                                       size_t max_requests = 64U,
@@ -314,6 +347,8 @@ class MasterNodeBootstrap {
    *
    * When `create_transport` is true, queue transport is created on-demand for
    * the requested source.
+   * Request overflow policy is always `RejectNew`; `drop_oldest_when_full`
+   * applies to response/event channels only.
    */
   ManagementFrontendAdapter makeFrontendAdapter(ManagementSource source,
                                                 bool create_transport = true,

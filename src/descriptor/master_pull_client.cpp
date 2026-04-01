@@ -93,6 +93,20 @@ bool MasterPullClient::requestSettings(const MacAddress& to, uint32_t corr_id) {
   return requestSimple(to, DescriptorQueryType::GetSettings, corr_id);
 }
 
+bool MasterPullClient::requestNodeBundle(const MacAddress& to,
+                                         uint8_t bundle_mask,
+                                         uint32_t corr_id) {
+  DescriptorQuery q{};
+  q.type = DescriptorQueryType::GetNodeBundle;
+  q.bundle_mask = (bundle_mask == 0U) ? kNodeBundleMaskAll : bundle_mask;
+  if ((q.bundle_mask & kNodeBundleMaskSettings) != 0U) {
+    q.paged = true;
+    q.cursor = 0U;
+    q.page_size = 16U;
+  }
+  return sendDescriptorQuery(to, q, corr_id);
+}
+
 bool MasterPullClient::requestSettingsPage(const MacAddress& to,
                                            uint16_t cursor,
                                            uint8_t page_size,

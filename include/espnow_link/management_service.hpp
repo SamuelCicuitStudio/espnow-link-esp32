@@ -3,10 +3,12 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "espnow_link/device_manager.hpp"
 #include "espnow_link/events.hpp"
+#include "espnow_link/control.hpp"
 #include "espnow_link/management_types.hpp"
 #include "espnow_link/manager.hpp"
 #include "espnow_link/master_pull_client.hpp"
@@ -23,7 +25,7 @@ class MasterCli;
  * This service receives normalized management requests (CLI/Wi-Fi/BLE/custom), executes
  * command handlers, and exposes queued responses/events for transport adapters.
  */
-class ManagementService : public IEventSink {
+class ManagementService : public IEventSink, public IControlPlane {
  public:
   /**
    * @brief Construct management service with role-aware dependencies.
@@ -83,12 +85,23 @@ class ManagementService : public IEventSink {
 
   /** @brief Get number of queued events. */
   size_t pendingEventCount() const;
+  /** @brief True when topology deploy/verify work is currently in-flight. */
+  bool topologyBusy() const;
 
   /**
    * @brief Receive manager runtime events and translate to management events.
    * @param event Runtime event from `EspNowManager`.
    */
   void onEvent(const Event& event) override;
+  /** @brief Ignore inbound pull requests on management service (master observer role). */
+  bool onPullRequest(const MacAddress& from, uint32_t corr_id, const uint8_t* payload, size_t len) override;
+  /**
+   * @brief Observe inbound master pull responses and emit source-routed management responses.
+   *
+   * This allows non-CLI transports (API/web/BLE/etc.) to receive descriptor payloads
+   * in their own queue channel for cache ingestion.
+   */
+  bool onPullResponse(const MacAddress& from, uint32_t corr_id, const uint8_t* payload, size_t len) override;
 
   /** @brief Bind local OTA staging storage backend for management-owned push orchestration. */
   void bindOtaPushStorage(IOtaStorageBackend* storage) { ota_push_storage_ = storage; }
@@ -190,6 +203,44 @@ class ManagementService : public IEventSink {
     uint16_t activation_latency_ms = 0;
   };
 
+  struct PendingDescriptorPull {
+    uint32_t req_id = 0;
+    uint16_t cmd_id = 0;
+    ManagementSource source = ManagementSource::Unknown;
+    MacAddress peer{};
+    PeerResolveContext peer_ctx{};
+    uint32_t deadline_ms = 0;
+    uint32_t corr_first = 0;
+    uint32_t corr_last = 0;
+    bool wait_node_bundle_done = false;
+    bool wait_node_bundle_strict_done = false;
+    bool wait_topology_stage_done = false;
+    uint8_t topology_stage_step = 0;
+    uint16_t topology_stage_group_cursor = 0;
+    uint16_t topology_stage_slot_cursor = 0;
+    uint32_t topology_stage_next_corr = 0;
+    uint32_t topology_stage_finalize_corr = 0;
+    bool topology_stage_finalize_seen = false;
+    uint16_t topology_stage_expected_responses = 0;
+    uint16_t topology_stage_seen_responses = 0;
+    std::vector<uint8_t> topology_stage_seen_bitmap{};
+    ManagementTopologySnapshotPayload topology_stage_snapshot{};
+    uint32_t response_chunks = 0;
+    bool node_bundle_done_seen = false;
+    bool node_bundle_total_known = false;
+    uint16_t node_bundle_expected_total = 0;
+    std::vector<std::pair<uint16_t, uint16_t>> node_bundle_settings_ranges{};
+  };
+
+  struct PendingDeferredTopologyCommit {
+    uint32_t req_id = 0;
+    uint16_t cmd_id = 0;
+    ManagementSource source = ManagementSource::Unknown;
+    MacAddress peer{};
+    PeerResolveContext peer_ctx{};
+    uint32_t deadline_ms = 0;
+  };
+
   struct LivenessPeerState {
     MacAddress peer{};
     bool online = true;
@@ -243,8 +294,20 @@ class ManagementService : public IEventSink {
   bool buildMetricsPayload(std::vector<uint8_t>& out_payload) const;
   void applyPeerContext(ManagementResponse& response, const PeerResolveContext& peer_ctx) const;
   void applyPeerContext(ManagementEvent& event, const PeerResolveContext& peer_ctx) const;
+  uint32_t allocateInternalCorrelation_();
 
   bool runDescriptorPull(const ManagementRequest& request, uint16_t cmd_id);
+  void trackPendingDescriptorPull_(const ManagementRequest& request,
+                                   const PeerResolveContext& peer_ctx,
+                                   const MacAddress& peer,
+                                   uint32_t corr_first,
+                                   uint32_t corr_last,
+                                   bool wait_topology_stage_done,
+                                   uint32_t topology_stage_finalize_corr,
+                                   const ManagementTopologySnapshotPayload* topology_stage_snapshot = nullptr);
+  void prunePendingDescriptorPulls_();
+  bool hasPendingTopologyStageForPeer_(const MacAddress& peer) const;
+  void dispatchDeferredTopologyCommitsForPeer_(const MacAddress& peer, ManagementStatus stage_status);
   bool runOtaArchiveCommand(const ManagementRequest& request, uint16_t cmd_id);
   bool runPushCommand(const ManagementRequest& request, uint16_t cmd_id);
   bool runOtaTransferCommand(const ManagementRequest& request, uint16_t cmd_id);
@@ -256,7 +319,7 @@ class ManagementService : public IEventSink {
   bool startChainLoopAll(ManagementSource source, uint32_t req_id, bool enabled);
   void pumpChainLoopAll();
   void stopChainLoopAll(bool success, ManagementStatus status);
-  bool buildChainLoopTargetPeers(std::vector<MacAddress>& out_peers) const;
+  bool buildChainLoopTargetPeers(std::vector<MacAddress>& out_peers);
   bool buildRuntimeChannelPayload(std::vector<uint8_t>& out_payload) const;
   bool buildLiveMonitorStatusPayload(std::vector<uint8_t>& out_payload) const;
   void loadLiveMonitorConfig();
@@ -269,6 +332,9 @@ class ManagementService : public IEventSink {
   void noteLivePeerSeen(const MacAddress& peer, uint8_t reason_code);
   void emitLivePeerTransition(const MacAddress& peer, bool online, uint8_t reason_code);
   bool hasPendingTargetRequest(const MacAddress& peer) const;
+  bool hasPendingDescriptorPullRequest_(ManagementSource source, uint32_t req_id) const;
+  const PendingDescriptorPull* findPendingDescriptorPullByCorrelation_(const MacAddress& peer,
+                                                                       uint32_t req_id) const;
   bool isCriticalLiveMonitorCommand(uint16_t cmd_id) const;
   LivenessPeerState* findLivePeerState(const MacAddress& peer);
   const LivenessPeerState* findLivePeerState(const MacAddress& peer) const;
@@ -405,6 +471,7 @@ class ManagementService : public IEventSink {
   LivenessMonitorState live_monitor_{};
   bool chain_loop_enabled_ = false;
   bool live_monitor_critical_inflight_ = false;
+  uint32_t next_internal_corr_id_ = 0x80000000U;
   uint32_t live_monitor_master_update_guard_until_ms_ = 0;
   bool radio_transition_active_ = false;
   RadioTransitionState radio_transition_state_ = RadioTransitionState::Idle;
@@ -425,6 +492,8 @@ class ManagementService : public IEventSink {
   std::deque<ManagementResponse> response_queue_;
   std::deque<ManagementEvent> event_queue_;
   std::vector<DeferredLifecycleCommand> deferred_lifecycle_commands_{};
+  std::vector<PendingDescriptorPull> pending_descriptor_pulls_{};
+  std::vector<PendingDeferredTopologyCommit> deferred_topology_commits_{};
   mutable std::recursive_mutex state_mx_{};
 };
 

@@ -162,6 +162,9 @@ class ManagementController {
                    uint8_t page_size,
                    uint32_t* out_req_id = nullptr,
                    uint32_t timeout_ms = 0);
+  bool nodeBundleGet(uint8_t bundle_mask = 0x1FU,
+                     uint32_t* out_req_id = nullptr,
+                     uint32_t timeout_ms = 0);
   bool settingsGet(uint32_t* out_req_id = nullptr, uint32_t timeout_ms = 0);
   bool settingsPageGet(uint16_t cursor,
                        uint8_t page_size,

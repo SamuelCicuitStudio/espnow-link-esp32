@@ -137,6 +137,7 @@ enum class ManagementCommandId : uint16_t {
   OtaArchiveVerify = 0x007E,
   CliControlSet = 0x007F,
   ChainLoopControlSet = 0x0080,
+  NodeBundleGet = 0x0081,
 };
 
 /** @brief Execution status returned by management command handlers. */
@@ -281,10 +282,22 @@ struct ManagementPeerMessagePayload {
 /** @brief Discovery update payload (`peer`, RSSI, optional display name, optional role code). */
 struct ManagementDiscoveryUpdatePayload {
   MacAddress peer{};
+  bool has_rssi = false;
   int16_t rssi = 0;
+  bool has_last_seen_age_ms = false;
+  uint32_t last_seen_age_ms = 0;
   std::string name{};
   /** Profile/role code (`kProfile* & 0xFF`) when present; 0 means unknown/unspecified sender. */
   uint8_t role_code = 0;
+};
+
+/** @brief One discovery snapshot entry with optional freshness metadata. */
+struct ManagementDiscoveredPeerInfo {
+  MacAddress peer{};
+  bool has_rssi = false;
+  int16_t rssi = 0;
+  bool has_last_seen_age_ms = false;
+  uint32_t last_seen_age_ms = 0;
 };
 
 /** @brief One paired-peer entry (`PairedSnapshotGet`) with optional role hint. */

@@ -145,6 +145,15 @@ bool ManagementController::capsPageGet(uint16_t cursor,
   return submitCommand_(ManagementCommandId::CapsPageGet, payload, out_req_id, timeout_ms);
 }
 
+bool ManagementController::nodeBundleGet(uint8_t bundle_mask,
+                                         uint32_t* out_req_id,
+                                         uint32_t timeout_ms) {
+  return submitCommand_(ManagementCommandId::NodeBundleGet,
+                        management_utils::buildNodeBundleGetPayload(bundle_mask),
+                        out_req_id,
+                        timeout_ms);
+}
+
 bool ManagementController::settingsGet(uint32_t* out_req_id, uint32_t timeout_ms) {
   return submitCommand_(ManagementCommandId::SettingsGet, {}, out_req_id, timeout_ms);
 }

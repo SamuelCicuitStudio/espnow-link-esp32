@@ -2,6 +2,7 @@
 
 #include <array>
 #include <deque>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -405,6 +406,20 @@ class EspNowManager {
     uint8_t source_virtual_index = 0xFF;  // 255 physical child
   };
 
+  /** @brief One index-based lateral trigger entry used by batch send API. */
+  struct TopologyTriggerBatchEntry {
+    int8_t target_index = 0;          // -13..+13 (non-zero)
+    uint16_t delay_ms = 0;
+    uint16_t hold_ms = 0;
+  };
+
+  /** @brief Batch topology trigger request resolved and sent to one physical peer. */
+  struct TopologyTriggerBatchRequest {
+    uint8_t direction = 0;                 // 1=forward, 2=reverse
+    uint8_t source_virtual_index = 0xFF;   // 255 physical child
+    std::vector<TopologyTriggerBatchEntry> entries{};
+  };
+
   /**
    * @brief Stage one candidate topology snapshot in runtime (no lateral apply yet).
    *
@@ -469,13 +484,30 @@ class EspNowManager {
    * @param corr_id Optional transport correlation ID (0 auto-generates).
    * @param out_seq Optional returned trigger sequence used in payload.
    * @param out_error Optional error token (`topology_missing`, `invalid_direction`,
-   *                  `invalid_source_virtual_index`, `send_failed`, plus resolver errors).
+   *                  `invalid_source_virtual_index`, `encode_failed`,
+   *                  `transport_send_failed`, plus resolver errors).
    * @return true when trigger was encoded and queued to transport.
    */
   bool sendTopologyTrigger(const TopologyTriggerRequest& request,
                            uint32_t corr_id = 0,
                            uint16_t* out_seq = nullptr,
                            std::string* out_error = nullptr);
+
+  /**
+   * @brief Send one topology lateral trigger batch to one resolved physical peer.
+   *
+   * All entries must resolve to the same target peer MAC and target role.
+   *
+   * @param request Batch request fields.
+   * @param corr_id Optional transport correlation ID (0 auto-generates).
+   * @param out_seq Optional returned batch sequence used in payload.
+   * @param out_error Optional error token.
+   * @return true when batch payload was encoded and queued to transport.
+   */
+  bool sendTopologyTriggerBatch(const TopologyTriggerBatchRequest& request,
+                                uint32_t corr_id = 0,
+                                uint16_t* out_seq = nullptr,
+                                std::string* out_error = nullptr);
 
   /**
    * @brief Snapshot logical peer registry state.
@@ -788,7 +820,8 @@ class EspNowManager {
                  uint32_t corr_id,
                  uint8_t wire_service = 0,
                  uint8_t wire_op = 0,
-                 uint8_t wire_msg_type = 0);
+                 uint8_t wire_msg_type = 0,
+                 std::string* out_error = nullptr);
   bool shouldAttachTimeSync(uint32_t now_ms) const;
   bool appendTimeSyncMetadata(const uint8_t* payload,
                               size_t len,
@@ -813,6 +846,10 @@ class EspNowManager {
                            const FrameHeader& header,
                            const uint8_t* payload,
                            size_t payload_len);
+  bool onRxTopologyTriggerBatch(const MacAddress& from,
+                                const FrameHeader& header,
+                                const uint8_t* payload,
+                                size_t payload_len);
   bool onRxTopologyTriggerAck(const MacAddress& from,
                               const FrameHeader& header,
                               const uint8_t* payload,
@@ -864,6 +901,34 @@ class EspNowManager {
                               const TopologySlot& slot,
                               LmkKey& out_lmk,
                               std::string* out_error) const;
+  struct TopologyPersistedLmkEntry_ {
+    MacAddress peer{};
+    LmkKey lmk{};
+    uint8_t group_id = 0;
+  };
+  struct TopologyPersistedLmkMeta_ {
+    uint32_t topology_version = 0;
+    uint32_t topology_checksum = 0;
+    MacAddress master_mac{};
+    MacAddress local_mac{};
+    uint8_t local_profile = 0;
+    std::vector<TopologyPersistedLmkEntry_> entries{};
+  };
+  bool loadTopologyLmkMeta_(TopologyPersistedLmkMeta_& out_meta, std::string* out_error);
+  bool validateTopologyLmkMeta_(const TopologyPersistedLmkMeta_& meta,
+                                const TopologySnapshot& snapshot,
+                                const MacAddress& paired_master,
+                                std::string* out_error) const;
+  bool findSlotLmkFromNvs_(const TopologySlot& slot,
+                           const TopologyPersistedLmkMeta_& meta,
+                           LmkKey& out_lmk) const;
+  bool buildDesiredTopologyPeersFromNvs_(const TopologySnapshot& snapshot,
+                                         const TopologyPersistedLmkMeta_& meta,
+                                         std::map<MacAddress, LmkKey>& out_desired,
+                                         std::string* out_error) const;
+  bool applyTopologyDesiredPeers_(const std::map<MacAddress, LmkKey>& desired,
+                                  std::string* out_error);
+  bool ensureTopologyPeerReadyForSlot_(const TopologySlot& slot, std::string* out_error);
   bool materializeTopologyPeers_(const TopologySnapshot& snapshot, std::string* out_error);
   bool saveTopologyLmkMeta_(const TopologySnapshot& snapshot);
   void restoreTopologySnapshots_();
@@ -897,6 +962,13 @@ class EspNowManager {
                       int32_t p2,
                       const uint8_t* ext = nullptr,
                       size_t ext_len = 0);
+  void emitTopologyRuntimeLog_(LibraryLogLevel level,
+                               uint16_t event_id,
+                               int32_t p1,
+                               int32_t p2,
+                               const char* reason);
+  void setTopologyRestoreStatus_(uint8_t mode, const char* reason);
+  void noteTopologyPeerReadyFailure_(const char* reason);
 
   ManagerConfig config_;
   ITransport& transport_;
@@ -973,6 +1045,11 @@ class EspNowManager {
   TopologySnapshot topology_committed_{};
   bool has_topology_staged_ = false;
   bool has_topology_committed_ = false;
+  uint8_t topology_restore_mode_ = 0;
+  std::array<char, 40> topology_restore_reason_{};
+  uint32_t topology_peer_ready_fail_count_ = 0;
+  std::array<char, 40> topology_peer_ready_last_reason_{};
+  std::map<std::string, uint32_t> topology_peer_ready_fail_by_reason_{};
   std::vector<MacAddress> topology_attached_peers_{};
   struct TopologyTriggerDedupEntry {
     MacAddress source{};

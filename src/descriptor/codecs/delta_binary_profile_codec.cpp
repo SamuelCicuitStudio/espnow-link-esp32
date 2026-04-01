@@ -165,6 +165,7 @@ bool DeltaBinaryProfileCodec::encodeDescriptorQuery(const DescriptorQuery& query
       query.type == DescriptorQueryType::ListStoragePath ||
       query.type == DescriptorQueryType::StatStoragePath ||
       query.type == DescriptorQueryType::FormatStorage ||
+      query.type == DescriptorQueryType::GetNodeBundle ||
       query.type == DescriptorQueryType::GetOtaStatus ||
       query.type == DescriptorQueryType::GetOtaManifest ||
       query.type == DescriptorQueryType::RebuildOtaManifest ||
@@ -271,6 +272,7 @@ bool DeltaBinaryProfileCodec::encodeDescriptorResponse(const DescriptorResponse&
       response.type == DescriptorResponseType::StorageInfo ||
       response.type == DescriptorResponseType::StorageList ||
       response.type == DescriptorResponseType::StorageStat ||
+      response.type == DescriptorResponseType::NodeBundle ||
       response.type == DescriptorResponseType::OtaStatus ||
       response.type == DescriptorResponseType::OtaManifest ||
       response.type == DescriptorResponseType::OtaCapacity ||

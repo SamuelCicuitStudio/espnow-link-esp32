@@ -4,6 +4,7 @@
 #include <string>
 #include <deque>
 #include <vector>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "espnow_link/control.hpp"
@@ -291,6 +292,40 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
     const char* reject_stage = "";
   };
 
+  enum class TopologyVerifyReqKind : uint8_t {
+    Status = 0,
+    SlotsCommitted = 1,
+  };
+
+  struct TopologyVerifyRequestState {
+    size_t target_index = 0U;
+    TopologyVerifyReqKind kind = TopologyVerifyReqKind::Status;
+  };
+
+  struct TopologyVerifyTargetState {
+    MacAddress target{};
+    ManagementTopologySnapshotPayload expected_snapshot{};
+    uint32_t status_req_id = 0U;
+    uint32_t slots_req_id = 0U;
+    bool status_done = false;
+    bool slots_done = false;
+    bool status_ok = false;
+    bool slots_ok = false;
+    std::string status_reason{};
+    std::string slots_reason{};
+    bool reported = false;
+  };
+
+  struct TopologyVerifySessionState {
+    bool active = false;
+    uint32_t started_ms = 0U;
+    uint32_t deadline_ms = 0U;
+    uint32_t topology_version = 0U;
+    std::string source_path{};
+    std::vector<TopologyVerifyTargetState> targets{};
+    std::unordered_map<uint32_t, TopologyVerifyRequestState> requests{};
+  };
+
   bool sendDescriptorQuery(const std::string& cmd);
   void setAutoPull(bool enabled, uint32_t interval_ms);
   void clearPeerSessionState_();
@@ -317,6 +352,7 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
                                  uint32_t timeout_ms = 0U,
                                  bool apply_runtime_target = true) const;
   bool usesManagementOnlyTraffic_() const;
+  bool shouldTickManagementRuntimeFromCli_() const;
   void noteCliOwnedReqId_(uint32_t req_id) const;
   bool isCliOwnedReqId_(uint32_t req_id) const;
   bool shouldProcessObserverPullResponse_(uint32_t corr_id) const;
@@ -390,6 +426,13 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
   bool startRemoteLogPull(uint16_t chunk_size);
   bool requestNextRemoteLogChunk();
   void stopRemoteLogPull(const char* reason, bool success);
+  void handleTopologyVerifyResponse_(const ManagementResponse& resp);
+  void checkTopologyVerifyTimeout_(uint32_t now_ms);
+  void clearTopologyVerifySession_(const char* reason = nullptr);
+  void maybeFinalizeTopologyVerifySession_();
+  bool compareTopologySlotsForVerify_(const ManagementTopologySnapshotPayload& expected,
+                                      const std::vector<ManagementTopologySlotPayload>& actual_slots,
+                                      std::string& out_reason) const;
   void resetDispatchSnapshot_() const;
   void captureDispatchSnapshot_(bool accepted,
                                 uint16_t cmd_id,
@@ -542,6 +585,7 @@ class MasterCli : public IEventSink, public IControlPlane, public IMasterOtaFron
   uint32_t mailbox_ignored_events_ = 0U;
   uint32_t mailbox_processed_responses_ = 0U;
   uint32_t mailbox_processed_events_ = 0U;
+  TopologyVerifySessionState topology_verify_{};
   mutable SubmitDispatchSnapshot dispatch_snapshot_{};
 };
 

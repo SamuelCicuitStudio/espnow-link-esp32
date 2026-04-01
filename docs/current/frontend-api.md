@@ -50,6 +50,30 @@ Adapter capabilities on top of controller:
 - event ring snapshots:
   - `eventsSnapshot`
 
+## Settings Cache Policy (Current + Migration Target)
+
+Current baseline:
+
+- adapter cache is readable via `cachedSettingResolved` / `cachedSettingsResolved`
+- refresh helpers (`settingsBundleRefresh`, `settingsBundleGet`) can hydrate cache from transport
+
+Migration target (library-first policy):
+
+1. cache-first read path for settings overlay/dialog open
+2. explicit refresh path for user-forced update only
+3. per-peer cache metadata surfaced to caller:
+   - `cache_hit`
+   - `completeness`
+   - `cache_age_ms`
+   - `refresh_performed`
+   - `refresh_status`
+4. startup reconcile hydration for already-paired peers
+5. write path supports changed-only/delta updates with unchanged-key skip
+
+Implementation planning reference:
+
+- `../optimization/slave-settings-cache-policy-and-delta-write-fix-plan.md`
+
 ## Radio Transition Helpers
 
 Adapter wrappers over service lifecycle:

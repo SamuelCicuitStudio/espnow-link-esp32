@@ -354,6 +354,10 @@ bool MasterCli::usesManagementOnlyTraffic_() const {
   return effectiveTrafficPolicy() == CliTrafficPolicy::ManagementOnly;
 }
 
+bool MasterCli::shouldTickManagementRuntimeFromCli_() const {
+  return (management_runtime_ != nullptr) && !usesManagementOnlyTraffic_();
+}
+
 void MasterCli::noteCliOwnedReqId_(uint32_t req_id) const {
   if (req_id == 0U) {
     return;
@@ -537,6 +541,9 @@ void MasterCli::printHelp() {
   io_.writeln("  cli status                        Show CLI enabled/disabled state");
   io_.writeln("  cli on                            Enable CLI and persist");
   io_.writeln("  cli off                           Disable CLI and persist");
+  io_.writeln("  cli.baud                          Show persisted CLI serial baud (ICM)");
+  io_.writeln("  cli.baud set <baud>               Persist baud and restart master (ICM)");
+  io_.writeln("  note: slave baud = target peer, set cli_baud=<baud>, then restart slave");
   io_.writeln("");
 
   io_.writeln("[PAIRING]");
@@ -576,6 +583,22 @@ void MasterCli::printHelp() {
   io_.writeln("  topology.edit.save [path]         Save JSON chain file (default /o/s/topology_chain.json)");
   io_.writeln("  topology.edit.load [path]         Load JSON chain file into editor");
   io_.writeln("  topology.file.show [path]         Print raw topology JSON file");
+  io_.writeln("  topology.chain.help               Show fixed-file chain command list");
+  io_.writeln("  topology.chain.set.help           Show one-line chain_spec syntax");
+  io_.writeln("  topology.chain.show               Show fixed /o/s/tp.json chain");
+  io_.writeln("  topology.chain.graph              Show fixed /o/s/tp.json chain graph");
+  io_.writeln("  topology.chain.clear              Clear fixed /o/s/tp.json chain");
+  io_.writeln("  topology.chain.add <S|R|SM|RM> <paired_index|MAC> [vi]");
+  io_.writeln("  topology.chain.edit <index> <S|R|SM|RM> <paired_index|MAC> [vi]");
+  io_.writeln("  topology.chain.del <index>        Delete one chain node from fixed file");
+  io_.writeln("  topology.chain.move <from> <to>   Move one chain node in fixed file");
+  io_.writeln("  topology.chain.validate           Validate fixed /o/s/tp.json");
+  io_.writeln("  topology.chain.fix                Auto-fix fixed /o/s/tp.json");
+  io_.writeln("  topology.chain.apply              Apply fixed /o/s/tp.json");
+  io_.writeln("  topology.chain.verify [timeout_ms] Verify each target committed fixed /o/s/tp.json");
+  io_.writeln("  topology.chain.backup             Backup fixed /o/s/tp.json");
+  io_.writeln("  topology.chain.restore            Restore fixed /o/s/tp.json backup");
+  io_.writeln("  topology.chain.set <chain_spec>   Replace full chain in one command");
   io_.writeln("  topology.local.status             Local-only status (force no target)");
   io_.writeln("  topology.local.slots [state]      Local-only slot dump");
   io_.writeln("  topology.local.stage.hex <hex>    Local-only stage");
@@ -604,6 +627,9 @@ void MasterCli::printHelp() {
   io_.writeln("  get.id <setting_id>               Read setting by numeric ID");
   io_.writeln("  set <setting_key>=<value>         Write setting by key");
   io_.writeln("  set.id <setting_id>=<value>       Write setting by numeric ID");
+  io_.writeln("  get cli_baud                      Read selected slave persisted CLI baud");
+  io_.writeln("  set cli_baud=<baud>               Persist selected slave CLI baud (restart required)");
+  io_.writeln("  note: supported baud = 9600,19200,38400,57600,74880,115200,230400,250000,460800,921600");
   io_.writeln("  note: SEMU child key syntax: v<0..7>.<sens_field>   (example: v2.detect_fall_delta_cm)");
   io_.writeln("  note: REMU child key syntax: v<0..15>.<relay_field> (example: v9.pulse_ms)");
   io_.writeln("");
@@ -636,6 +662,7 @@ void MasterCli::printHelp() {
   io_.writeln("  reset master                      Reset flow on master");
   io_.writeln("  restart slave                     Request slave restart");
   io_.writeln("  reset slave                       Request slave reset");
+  io_.writeln("  tip: after set cli_baud=<baud> on a slave, run restart slave to apply");
   io_.writeln("  audio ping                        Request targeted slave audio/LED ping");
   io_.writeln("");
 
@@ -761,6 +788,8 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
     io_.writeln("  active [<index|mac>|clear]   Sticky runtime target show/set/clear");
     io_.writeln("  live enable|disable|status   Global auto liveness monitor control/status");
     io_.writeln("  cli status|on|off            Persisted CLI enable control");
+    io_.writeln("  cli.baud                     Show persisted CLI serial baud");
+    io_.writeln("  cli.baud set <baud>          Save baud and restart master");
     io_.writeln("  target syntax                <index> <command> or <mac> <command>");
     return true;
   }
@@ -800,6 +829,22 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
     io_.writeln("  topology.edit.save [path]         Save editor chain JSON to storage");
     io_.writeln("  topology.edit.load [path]         Load chain JSON into editor");
     io_.writeln("  topology.file.show [path]         Print raw topology JSON file");
+    io_.writeln("  topology.chain.help               Show fixed-file chain command list");
+    io_.writeln("  topology.chain.set.help           Show one-line chain_spec syntax");
+    io_.writeln("  topology.chain.show");
+    io_.writeln("  topology.chain.graph");
+    io_.writeln("  topology.chain.clear");
+    io_.writeln("  topology.chain.add <S|R|SM|RM> <paired_index|mac> [vi]");
+    io_.writeln("  topology.chain.edit <index> <S|R|SM|RM> <paired_index|mac> [vi]");
+    io_.writeln("  topology.chain.del <index>");
+    io_.writeln("  topology.chain.move <from_index> <to_index>");
+    io_.writeln("  topology.chain.validate");
+    io_.writeln("  topology.chain.fix");
+    io_.writeln("  topology.chain.apply");
+    io_.writeln("  topology.chain.verify [timeout_ms]");
+    io_.writeln("  topology.chain.backup");
+    io_.writeln("  topology.chain.restore");
+    io_.writeln("  topology.chain.set <chain_spec>");
     io_.writeln("  topology.local.*                  Same commands but forced local-only (no target)");
     io_.writeln("  chain rules                       start/end with S|SM; no adjacent S/SM; R/RM adjacency allowed");
     io_.writeln("  target syntax                     <index> <command> or <mac> <command> works on topology.*");
@@ -840,8 +885,13 @@ bool MasterCli::printTopicHelp(const std::string& topic) {
     io_.writeln("  settings.raw                 Raw descriptor settings view (paged)");
     io_.writeln("  get <key> | get.id <id>      Read one setting");
     io_.writeln("  set <key>=<v> | set.id ...   Write one setting");
+    io_.writeln("  get cli_baud                 Read selected slave persisted CLI baud");
+    io_.writeln("  set cli_baud=<baud>          Persist selected slave CLI baud");
+    io_.writeln("  restart slave                Apply new slave CLI baud after set");
+    io_.writeln("  baud list                    9600,19200,38400,57600,74880,115200,230400,250000,460800,921600");
     io_.writeln("  child keys: v<vid>.<field>   (SEMU vid=0..7, REMU vid=0..15)");
     io_.writeln("  examples: get v1.detect_release_delta_cm   set v6.pulse_ms=750");
+    io_.writeln("  baud example: active 0  -> set cli_baud=250000  -> restart slave");
     io_.writeln("  note: values are validated by descriptor provider rules");
     return true;
   }
@@ -969,6 +1019,7 @@ void MasterCli::clearPeerSessionState_() {
   ota_update_target_peer_ = {};
   probe_pending_kind_ = ProbePendingKind::None;
   probe_sent_ms_ = 0;
+  clearTopologyVerifySession_();
   clearActiveTarget_();
   peer_profile_cache_.clear();
 }
@@ -1424,6 +1475,12 @@ bool MasterCli::onPullResponse(const MacAddress& from,
                                uint32_t corr_id,
                                const uint8_t* payload,
                                size_t len) {
+  if (auto_pull_enabled_ && auto_pull_has_target_peer_ && from == auto_pull_target_peer_) {
+    bool recovered = false;
+    auto_pull_.onPeerActivity(nowMs(), recovered);
+    (void)recovered;
+  }
+
   if (!shouldProcessObserverPullResponse_(corr_id)) {
     ++observer_ignored_pull_responses_;
     return true;

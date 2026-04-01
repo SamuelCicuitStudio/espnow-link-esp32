@@ -9,15 +9,20 @@
 #include <cstdlib>
 #include <ctime>
 #include <limits>
+#if defined(ARDUINO)
+#include <Preferences.h>
+#endif
 
 #include "espnow_link/address.hpp"
 #include "espnow_link/management_controller.hpp"
 #include "espnow_link/management_runtime.hpp"
 #include "espnow_link/management_service.hpp"
 #include "espnow_link/management_utils.hpp"
+#include "espnow_link/nvs_contract.hpp"
 #include "espnow_link/ota_paths.hpp"
 #include "espnow_link/profile.hpp"
 #include "espnow_link/security.hpp"
+#include "profile_catalog/masters/icm/icm_keys.hpp"
 #include "cli_helpers.hpp"
 
 namespace espnow_link {
@@ -78,6 +83,307 @@ bool parseFloatToken(const std::string& token, float& out) {
   }
   out = v;
   return true;
+}
+
+bool parseBoolToken(const std::string& token, bool& out) {
+  const std::string t = lowerCopy(trim(token));
+  if (t == "1" || t == "true" || t == "yes" || t == "on") {
+    out = true;
+    return true;
+  }
+  if (t == "0" || t == "false" || t == "no" || t == "off") {
+    out = false;
+    return true;
+  }
+  return false;
+}
+
+bool isSupportedIcmCliBaud(uint32_t baud) {
+  static constexpr uint32_t kSupported[] = {
+    9600U, 19200U, 38400U, 57600U, 74880U, 115200U, 230400U, 250000U, 460800U, 921600U
+  };
+  for (uint32_t value : kSupported) {
+    if (baud == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const char* supportedIcmCliBaudList() {
+  return "9600,19200,38400,57600,74880,115200,230400,250000,460800,921600";
+}
+
+bool loadPersistedIcmCliBaud(uint32_t& out_baud) {
+  out_baud = static_cast<uint32_t>(PCAT_ICM_SET_CLIBD_DEF);
+#if defined(ARDUINO)
+  Preferences prefs;
+  if (!prefs.begin(kSharedNvsNamespace, true, kSharedNvsPartition)) {
+    return false;
+  }
+  if (prefs.isKey(PCAT_ICM_KEY_CLIBD)) {
+    out_baud = prefs.getUInt(PCAT_ICM_KEY_CLIBD, out_baud);
+  }
+  prefs.end();
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool savePersistedIcmCliBaud(uint32_t baud) {
+#if defined(ARDUINO)
+  Preferences prefs;
+  if (!prefs.begin(kSharedNvsNamespace, false, kSharedNvsPartition)) {
+    return false;
+  }
+  const bool ok = (prefs.putUInt(PCAT_ICM_KEY_CLIBD, baud) == sizeof(uint32_t));
+  prefs.end();
+  return ok;
+#else
+  (void)baud;
+  return false;
+#endif
+}
+
+uint8_t countEnabledSnapshotSlotsForVerify(const ManagementTopologySnapshotPayload& snapshot) {
+  uint8_t count = 0U;
+  for (const auto& slot : snapshot.slots) {
+    if (slot.enabled) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+uint8_t countEnabledSnapshotGroupsForVerify(const ManagementTopologySnapshotPayload& snapshot) {
+  uint8_t count = 0U;
+  for (const auto& group : snapshot.groups) {
+    if (group.enabled) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+std::string formatHex32ForVerify(uint32_t value) {
+  char buf[11] = {0};
+  std::snprintf(buf, sizeof(buf), "%08lX", static_cast<unsigned long>(value));
+  return std::string(buf);
+}
+
+uint32_t computeSnapshotChecksumForVerify(const ManagementTopologySnapshotPayload& snapshot) {
+  std::array<ManagementTopologySlotPayload, kManagementTopologyMaxSlots> slots{};
+  std::array<ManagementTopologyGroupSeedPayload, kManagementTopologyMaxGroups> groups{};
+  for (uint8_t i = 0U; i < kManagementTopologyMaxSlots; ++i) {
+    slots[i].slot_index = i;
+  }
+  for (uint8_t i = 0U; i < kManagementTopologyMaxGroups; ++i) {
+    groups[i].group_slot = i;
+  }
+
+  for (const auto& slot : snapshot.slots) {
+    if (slot.slot_index >= kManagementTopologyMaxSlots) {
+      continue;
+    }
+    slots[slot.slot_index] = slot;
+  }
+  for (const auto& group : snapshot.groups) {
+    if (group.group_slot >= kManagementTopologyMaxGroups) {
+      continue;
+    }
+    groups[group.group_slot] = group;
+  }
+
+  const uint8_t enabled_slots = countEnabledSnapshotSlotsForVerify(snapshot);
+  const uint8_t enabled_groups = countEnabledSnapshotGroupsForVerify(snapshot);
+
+  uint32_t hash = 2166136261UL;
+  auto mix8 = [&](uint8_t v) {
+    hash ^= static_cast<uint32_t>(v);
+    hash *= 16777619UL;
+  };
+  auto mix32 = [&](uint32_t v) {
+    mix8(static_cast<uint8_t>(v & 0xFFU));
+    mix8(static_cast<uint8_t>((v >> 8) & 0xFFU));
+    mix8(static_cast<uint8_t>((v >> 16) & 0xFFU));
+    mix8(static_cast<uint8_t>((v >> 24) & 0xFFU));
+  };
+
+  mix8(snapshot.schema_version);
+  mix8(2U);  // committed state
+  mix32(snapshot.topology_version);
+  mix8(snapshot.index_neg);
+  mix8(snapshot.index_pos);
+  mix8(enabled_slots);
+  mix8(enabled_groups);
+  for (const auto& slot : slots) {
+    mix8(static_cast<uint8_t>(slot.enabled ? 1U : 0U));
+    for (uint8_t b : slot.peer) {
+      mix8(b);
+    }
+    mix8(slot.peer_role);
+    mix8(slot.group_id);
+    mix8(static_cast<uint8_t>(slot.relative_index));
+    mix8(slot.local_virtual_index);
+    mix8(slot.peer_virtual_index);
+    mix8(static_cast<uint8_t>(slot.axis_order));
+    mix8(static_cast<uint8_t>(slot.delay_ms & 0xFFU));
+    mix8(static_cast<uint8_t>((slot.delay_ms >> 8) & 0xFFU));
+    mix8(static_cast<uint8_t>(slot.hold_ms & 0xFFU));
+    mix8(static_cast<uint8_t>((slot.hold_ms >> 8) & 0xFFU));
+  }
+  for (const auto& group : groups) {
+    mix8(static_cast<uint8_t>(group.enabled ? 1U : 0U));
+    mix8(group.group_id);
+    for (uint8_t b : group.seed) {
+      mix8(b);
+    }
+  }
+  return hash;
+}
+
+struct ParsedTopologyStatusForVerify {
+  ManagementTopologyStatusPayload status{};
+  bool committed_state_known = false;
+  bool committed_groups_known = false;
+  bool index_window_known = false;
+  bool committed_checksum_known = false;
+};
+
+bool parseTopologyStatusAckMessageForVerify(const std::string& message,
+                                            ParsedTopologyStatusForVerify& out) {
+  out = ParsedTopologyStatusForVerify{};
+  if (trim(message).empty()) {
+    return false;
+  }
+
+  bool seen_any = false;
+  bool seen_index_neg = false;
+  bool seen_index_pos = false;
+  std::string token{};
+  std::vector<std::string> tokens{};
+  tokens.reserve(16U);
+  for (char c : message) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    if (std::isspace(uc) != 0 || c == ',' || c == ';') {
+      if (!token.empty()) {
+        tokens.push_back(token);
+        token.clear();
+      }
+      continue;
+    }
+    token.push_back(c);
+  }
+  if (!token.empty()) {
+    tokens.push_back(token);
+  }
+  for (const std::string& raw : tokens) {
+    const size_t eq = raw.find('=');
+    if (eq == std::string::npos || eq == 0U || eq + 1U >= raw.size()) {
+      continue;
+    }
+    const std::string key = lowerCopy(trim(raw.substr(0U, eq)));
+    std::string value = trim(raw.substr(eq + 1U));
+    while (!value.empty() && (value.back() == ',' || value.back() == ';')) {
+      value.pop_back();
+    }
+    while (!value.empty() && (value.front() == ',' || value.front() == ';')) {
+      value.erase(value.begin());
+    }
+    if (key.empty() || value.empty()) {
+      continue;
+    }
+
+    bool parsed_bool = false;
+    uint32_t parsed_u32 = 0U;
+    if (key == "staged") {
+      if (parseBoolToken(value, parsed_bool)) {
+        out.status.has_staged = parsed_bool;
+        seen_any = true;
+      }
+    } else if (key == "committed") {
+      if (parseBoolToken(value, parsed_bool)) {
+        out.status.has_committed = parsed_bool;
+        seen_any = true;
+      }
+    } else if (key == "staged_ver") {
+      if (parseU32Token(value, parsed_u32)) {
+        out.status.staged_version = parsed_u32;
+        seen_any = true;
+      }
+    } else if (key == "committed_ver") {
+      if (parseU32Token(value, parsed_u32)) {
+        out.status.committed_version = parsed_u32;
+        seen_any = true;
+      }
+    } else if (key == "staged_slots") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.staged_slot_count = static_cast<uint8_t>(parsed_u32);
+        seen_any = true;
+      }
+    } else if (key == "committed_slots") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.committed_slot_count = static_cast<uint8_t>(parsed_u32);
+        seen_any = true;
+      }
+    } else if (key == "staged_groups") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.staged_group_count = static_cast<uint8_t>(parsed_u32);
+        seen_any = true;
+      }
+    } else if (key == "committed_groups") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.committed_group_count = static_cast<uint8_t>(parsed_u32);
+        out.committed_groups_known = true;
+        seen_any = true;
+      }
+    } else if (key == "staged_state") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.staged_state = static_cast<uint8_t>(parsed_u32);
+        seen_any = true;
+      }
+    } else if (key == "committed_state") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.committed_state = static_cast<uint8_t>(parsed_u32);
+        out.committed_state_known = true;
+        seen_any = true;
+      }
+    } else if (key == "index_neg") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.index_neg = static_cast<uint8_t>(parsed_u32);
+        seen_index_neg = true;
+        seen_any = true;
+      }
+    } else if (key == "index_pos") {
+      if (parseU32Token(value, parsed_u32) && parsed_u32 <= 0xFFU) {
+        out.status.index_pos = static_cast<uint8_t>(parsed_u32);
+        seen_index_pos = true;
+        seen_any = true;
+      }
+    } else if (key == "staged_checksum") {
+      if (parseU32Token(value, parsed_u32)) {
+        out.status.staged_checksum = parsed_u32;
+        seen_any = true;
+      }
+    } else if (key == "committed_checksum") {
+      if (parseU32Token(value, parsed_u32)) {
+        out.status.committed_checksum = parsed_u32;
+        out.committed_checksum_known = true;
+        seen_any = true;
+      }
+    }
+  }
+
+  out.status.schema_version = 1U;
+  if (!out.committed_state_known) {
+    out.status.committed_state = out.status.has_committed ? 2U : 0U;
+  }
+  out.index_window_known = seen_index_neg && seen_index_pos;
+  if (!out.committed_groups_known && out.status.committed_group_count > 0U) {
+    out.committed_groups_known = true;
+  }
+  return seen_any;
 }
 
 bool parseHexPayload(const std::string& hex_text, std::vector<uint8_t>& out) {
@@ -934,6 +1240,7 @@ bool parseTopologyChainJson(const std::string& json_text,
                                           [&](const PendingChainSlot& s) {
                                             return s.peer == candidate.peer &&
                                                    s.peer_role == candidate.peer_role &&
+                                                   s.local_virtual_index == candidate.local_virtual_index &&
                                                    s.peer_virtual_index == candidate.peer_virtual_index;
                                           });
     if (same_logical_peer == builder->slots.end()) {
@@ -2522,7 +2829,7 @@ bool MasterCli::handleTestAndLocalCommands(const std::string& lower) {
       const uint32_t start_ms = nowMs();
       while (static_cast<uint32_t>(nowMs() - start_ms) < budget_ms) {
         const uint32_t now = nowMs();
-        if (management_runtime_ != nullptr) {
+        if (shouldTickManagementRuntimeFromCli_()) {
           management_runtime_->tick(now, 4U, 16U, 32U);
         }
         pumpManagementMailbox();
@@ -2783,7 +3090,9 @@ bool MasterCli::handleTestAndLocalCommands(const std::string& lower) {
     ManagementStatus status_value = ManagementStatus::InternalError;
     const uint32_t deadline_ms = nowMs() + 1500U;
     while (!status_seen && static_cast<int32_t>(nowMs() - deadline_ms) < 0) {
-      management_runtime_->tick(nowMs(), 4U, 16U, 32U);
+      if (shouldTickManagementRuntimeFromCli_()) {
+        management_runtime_->tick(nowMs(), 4U, 16U, 32U);
+      }
 
       ManagementResponse resp{};
       while (management_transport_->pollResponse(resp)) {
@@ -2833,6 +3142,52 @@ bool MasterCli::handleTestAndLocalCommands(const std::string& lower) {
     const uint64_t now_s = static_cast<uint64_t>(std::time(nullptr));
     writef("[MASTER][TIME] local_epoch_s=%llu", static_cast<unsigned long long>(now_s));
     captureDispatchSnapshot_(true, 0U, 0U, ManagementStatus::Ok, "");
+    return true;
+  }
+
+  if (lower == "cli.baud" || lower == "cli.baud.get" ||
+      lower == "cli.speed" || lower == "cli.speed.get") {
+    uint32_t baud = static_cast<uint32_t>(PCAT_ICM_SET_CLIBD_DEF);
+    const bool read_ok = loadPersistedIcmCliBaud(baud);
+    if (!isSupportedIcmCliBaud(baud)) {
+      baud = static_cast<uint32_t>(PCAT_ICM_SET_CLIBD_DEF);
+    }
+    writef("[MASTER][CLI] cli.baud current=%lu default=%lu supported=[%s]",
+           static_cast<unsigned long>(baud),
+           static_cast<unsigned long>(PCAT_ICM_SET_CLIBD_DEF),
+           supportedIcmCliBaudList());
+    captureDispatchSnapshot_(read_ok, 0U, 0U, read_ok ? ManagementStatus::Ok : ManagementStatus::InternalError,
+                             read_ok ? "" : "nvs_read");
+    return true;
+  }
+
+  if (startsWith(lower, "cli.baud set ") || startsWith(lower, "cli.speed set ")) {
+    const size_t prefix_len = startsWith(lower, "cli.baud set ") ? 13U : 14U;
+    const std::string arg = trim(lower.substr(prefix_len));
+    uint32_t baud = 0U;
+    if (!parseU32Token(arg, baud) || !isSupportedIcmCliBaud(baud)) {
+      io_.writeln("[MASTER][CLI] usage: cli.baud set <baud>");
+      writef("[MASTER][CLI] supported baud values: %s", supportedIcmCliBaudList());
+      captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::BadPayload, "validation");
+      return true;
+    }
+
+    if (!savePersistedIcmCliBaud(baud)) {
+      io_.writeln("[MASTER][CLI] failed to persist cli baud");
+      captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::InternalError, "nvs_write");
+      return true;
+    }
+
+    writef("[MASTER][CLI] cli.baud saved=%lu (restart required)",
+           static_cast<unsigned long>(baud));
+    captureDispatchSnapshot_(true, 0U, 0U, ManagementStatus::Ok, "");
+
+    if (actions_ != nullptr) {
+      io_.writeln("[MASTER][CLI] restarting master to apply CLI baud");
+      actions_->requestMasterRestart(false);
+    } else {
+      io_.writeln("[MASTER][CLI] restart hook unavailable; run: restart master");
+    }
     return true;
   }
 
@@ -3396,8 +3751,9 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
   if (!startsWith(lower, "topology.")) {
     return false;
   }
+  const bool is_topology_chain_cmd = startsWith(lower, "topology.chain.");
   const bool is_topology_edit_cmd =
-      startsWith(lower, "topology.edit.") || startsWith(lower, "topology.file.show");
+      startsWith(lower, "topology.edit.") || startsWith(lower, "topology.file.show") || is_topology_chain_cmd;
   if (!is_topology_edit_cmd && management_transport_ == nullptr) {
     io_.writeln("[MASTER][TOPO] management path unavailable");
     captureDispatchSnapshot_(false, 0U, 0U, ManagementStatus::DeniedByPolicy, "availability");
@@ -3779,6 +4135,1056 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
     return true;
   };
 
+  auto printTopologyChainHelp = [&]() {
+    io_.writeln("[MASTER][TOPO][CHAIN] fixed path: /o/s/tp.json");
+    io_.writeln("[MASTER][TOPO][CHAIN] commands:");
+    io_.writeln("  topology.chain.show");
+    io_.writeln("  topology.chain.graph");
+    io_.writeln("  topology.chain.clear");
+    io_.writeln("  topology.chain.add <S|R|SM|RM> <paired_index|MAC> [vi]");
+    io_.writeln("  topology.chain.edit <index> <S|R|SM|RM> <paired_index|MAC> [vi]");
+    io_.writeln("  topology.chain.del <index>");
+    io_.writeln("  topology.chain.move <from_index> <to_index>");
+    io_.writeln("  topology.chain.validate");
+    io_.writeln("  topology.chain.fix");
+    io_.writeln("  topology.chain.apply");
+    io_.writeln("  topology.chain.verify [timeout_ms]");
+    io_.writeln("  topology.chain.backup");
+    io_.writeln("  topology.chain.restore");
+    io_.writeln("  topology.chain.set <chain_spec>");
+    io_.writeln("  topology.chain.set.help");
+    io_.writeln("[MASTER][TOPO][CHAIN] chain_spec: <TYPE>@<PEER>[#<CH>] joined by '>'");
+    io_.writeln("[MASTER][TOPO][CHAIN] TYPE=S|R|SM|RM, CH only for SM(0..7)/RM(0..15)");
+  };
+
+  static constexpr const char* kFixedChainPath = "/o/s/tp.json";
+
+  auto requireNoChainArgs = [&](const char* usage) -> bool {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() == 1U) {
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] usage: %s", usage);
+    return false;
+  };
+
+  auto chainRoleLabelLong = [](ChainNodeType type) -> const char* {
+    switch (type) {
+      case ChainNodeType::Sensor:
+        return "SENSOR";
+      case ChainNodeType::Relay:
+        return "RELAY";
+      case ChainNodeType::SemuChild:
+        return "SEMU";
+      case ChainNodeType::RemuChild:
+        return "REMU";
+    }
+    return "?";
+  };
+
+  auto formatChainNodeLong = [&](const ChainNode& node) -> std::string {
+    char idx_buf[8];
+    std::snprintf(idx_buf, sizeof(idx_buf), "%02u", static_cast<unsigned int>(node.chain_index + 1U));
+    std::string text = std::string(idx_buf) + " " + chainRoleLabelLong(node.type);
+    if (node.type == ChainNodeType::SemuChild || node.type == ChainNodeType::RemuChild) {
+      text += " ch=" + std::to_string(static_cast<int>(node.virtual_index));
+    }
+    text += " mac=" + macToPrintable(node.mac);
+    return text;
+  };
+
+  auto loadFixedChainForRead = [&](std::string& out_json,
+                                   TopologyChainPlanDebug& out_debug,
+                                   uint32_t& out_topology_version,
+                                   size_t& out_targets,
+                                   std::string& out_error) -> bool {
+    out_json.clear();
+    out_debug = TopologyChainPlanDebug{};
+    out_topology_version = 1U;
+    out_targets = 0U;
+    out_error.clear();
+
+    if (ota_push_storage_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][CHAIN] local storage backend unavailable");
+      out_error = "storage_unavailable";
+      return false;
+    }
+
+    std::string read_msg;
+    if (!readTextFileLocal(*ota_push_storage_, kFixedChainPath, out_json, read_msg)) {
+      writef("[MASTER][TOPO][CHAIN] read failed path=%s reason=%s", kFixedChainPath, read_msg.c_str());
+      out_error = read_msg;
+      return false;
+    }
+
+    std::vector<TopologyDeployTarget> targets{};
+    if (!parseTopologyChainJson(out_json,
+                                out_topology_version,
+                                targets,
+                                out_topology_version,
+                                out_error,
+                                &out_debug)) {
+      return false;
+    }
+    out_targets = targets.size();
+    return true;
+  };
+
+  auto loadEditorLooseFromJson = [&](const std::string& json_text, std::string& out_error) -> bool {
+    out_error.clear();
+
+    uint32_t schema_version = 0U;
+    if (!extractJsonU32Value(json_text, "v", schema_version) || schema_version != 2U) {
+      out_error = "schema version invalid (expected v=2)";
+      return false;
+    }
+
+    uint32_t topology_version = static_cast<uint32_t>(std::time(nullptr));
+    if (topology_version == 0U) {
+      topology_version = 1U;
+    }
+    uint32_t topo_ver_from_json = 0U;
+    if (extractJsonU32Value(json_text, "topo_ver", topo_ver_from_json) &&
+        topo_ver_from_json != 0U) {
+      topology_version = topo_ver_from_json;
+    }
+
+    std::vector<uint32_t> seeds{};
+    (void)parseJsonU32Array(json_text, "seed", seeds);
+
+    std::string chain_slice;
+    if (!extractJsonArraySlice(json_text, "chain", chain_slice)) {
+      out_error = "chain array missing";
+      return false;
+    }
+    std::vector<std::string> chain_items{};
+    if (!splitJsonArrayObjects(chain_slice, chain_items)) {
+      out_error = "chain array invalid";
+      return false;
+    }
+
+    std::vector<TopologyEditNodeState> chain{};
+    chain.reserve(chain_items.size());
+    for (const std::string& item : chain_items) {
+      std::string type_token;
+      std::string mac_token;
+      int32_t vi = -1;
+      if (!extractJsonStringValue(item, "t", type_token) ||
+          !extractJsonStringValue(item, "m", mac_token) ||
+          !extractJsonI32Value(item, "vi", vi)) {
+        out_error = "chain node missing t/m/vi";
+        return false;
+      }
+
+      TopologyEditNodeState node{};
+      if (!parseChainNodeType(type_token, node.type)) {
+        out_error = "chain node type invalid";
+        return false;
+      }
+      if (!parseMac(mac_token, node.mac)) {
+        out_error = "chain node mac invalid";
+        return false;
+      }
+
+      if (node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) {
+        node.vi = -1;
+      } else if (node.type == ChainNodeType::SemuChild) {
+        if (vi < 0) vi = 0;
+        if (vi > 7) vi = 7;
+        node.vi = vi;
+      } else {
+        if (vi < 0) vi = 0;
+        if (vi > 15) vi = 15;
+        node.vi = vi;
+      }
+      chain.push_back(node);
+    }
+
+    topology_edit.topology_version = topology_version;
+    topology_edit.seeds = seeds;
+    topology_edit.chain = chain;
+    return true;
+  };
+
+  auto loadEditorFromFixedFile = [&](bool allow_loose, std::string& out_error) -> bool {
+    out_error.clear();
+    if (ota_push_storage_ == nullptr) {
+      out_error = "storage_unavailable";
+      return false;
+    }
+    std::string json_text;
+    std::string read_msg;
+    if (!readTextFileLocal(*ota_push_storage_, kFixedChainPath, json_text, read_msg)) {
+      out_error = read_msg.empty() ? "read failed" : read_msg;
+      return false;
+    }
+    if (loadEditorFromJson(json_text, out_error)) {
+      return true;
+    }
+    if (allow_loose) {
+      std::string loose_error;
+      if (loadEditorLooseFromJson(json_text, loose_error)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto persistEditorRawToFixed = [&](size_t& out_relay_groups, std::string& out_error) -> bool {
+    out_relay_groups = countRelayBlocks(topology_edit.chain);
+    std::vector<uint32_t> resolved_seeds{};
+    bool auto_seeded = false;
+    resolveEditorSeeds(out_relay_groups, resolved_seeds, auto_seeded);
+    (void)auto_seeded;
+    topology_edit.seeds = resolved_seeds;
+    const std::string json_text = buildEditorJson(resolved_seeds);
+    if (ota_push_storage_ == nullptr) {
+      out_error = "storage_unavailable";
+      return false;
+    }
+    std::string write_msg;
+    if (!writeTextFileLocal(*ota_push_storage_, kFixedChainPath, json_text, write_msg)) {
+      out_error = write_msg.empty() ? "write failed" : write_msg;
+      return false;
+    }
+    out_error.clear();
+    return true;
+  };
+
+  auto persistEditorValidatedToFixed = [&](size_t& out_relay_groups,
+                                           size_t& out_targets,
+                                           std::string& out_error) -> bool {
+    out_relay_groups = 0U;
+    out_targets = 0U;
+    std::string json_text;
+    std::vector<uint32_t> resolved_seeds{};
+    uint32_t validated_topology_version = topology_edit.topology_version;
+    if (!buildValidatedEditorJson(json_text,
+                                  resolved_seeds,
+                                  validated_topology_version,
+                                  out_relay_groups,
+                                  out_targets,
+                                  out_error)) {
+      return false;
+    }
+    topology_edit.seeds = resolved_seeds;
+    topology_edit.topology_version = validated_topology_version;
+    if (ota_push_storage_ == nullptr) {
+      out_error = "storage_unavailable";
+      return false;
+    }
+    std::string write_msg;
+    if (!writeTextFileLocal(*ota_push_storage_, kFixedChainPath, json_text, write_msg)) {
+      out_error = write_msg.empty() ? "write failed" : write_msg;
+      return false;
+    }
+    out_error.clear();
+    return true;
+  };
+
+  auto parseChainIndexToken = [&](const std::string& token, size_t chain_size, size_t& out_pos) -> bool {
+    out_pos = 0U;
+    if (token.empty() || chain_size == 0U) {
+      return false;
+    }
+    char* end = nullptr;
+    const long idx = std::strtol(token.c_str(), &end, 10);
+    if (end == nullptr || *end != '\0') {
+      return false;
+    }
+    if (idx >= 1L && static_cast<size_t>(idx) <= chain_size) {
+      out_pos = static_cast<size_t>(idx - 1L);
+      return true;
+    }
+    if (idx >= 0L && static_cast<size_t>(idx) < chain_size) {
+      out_pos = static_cast<size_t>(idx);
+      return true;
+    }
+    return false;
+  };
+
+  auto parseChainSpec = [&](const std::string& chain_spec,
+                            std::vector<TopologyEditNodeState>& out_chain,
+                            std::string& out_error) -> bool {
+    out_chain.clear();
+    out_error.clear();
+    const std::string spec = trim(chain_spec);
+    if (spec.empty()) {
+      out_error = "chain_spec is empty";
+      return false;
+    }
+
+    size_t cursor = 0U;
+    size_t node_pos = 0U;
+    while (cursor <= spec.size()) {
+      const size_t sep = spec.find('>', cursor);
+      const std::string raw_node =
+          (sep == std::string::npos) ? spec.substr(cursor) : spec.substr(cursor, sep - cursor);
+      const std::string node_text = trim(raw_node);
+      if (node_text.empty()) {
+        out_error = "node " + std::to_string(node_pos + 1U) + ": empty segment";
+        return false;
+      }
+
+      const size_t at = node_text.find('@');
+      if (at == std::string::npos || at == 0U || at + 1U >= node_text.size()) {
+        out_error = "node " + std::to_string(node_pos + 1U) + ": expected <TYPE>@<PEER>[#<CH>]";
+        return false;
+      }
+      const std::string type_token = trim(node_text.substr(0U, at));
+      std::string peer_and_channel = trim(node_text.substr(at + 1U));
+      if (peer_and_channel.empty()) {
+        out_error = "node " + std::to_string(node_pos + 1U) + ": missing peer";
+        return false;
+      }
+
+      TopologyEditNodeState node{};
+      if (!parseChainNodeType(type_token, node.type)) {
+        out_error = "node " + std::to_string(node_pos + 1U) + ": invalid type";
+        return false;
+      }
+
+      std::string peer_token = peer_and_channel;
+      bool has_channel = false;
+      int32_t parsed_channel = -1;
+      const size_t hash = peer_and_channel.find('#');
+      if (hash != std::string::npos) {
+        peer_token = trim(peer_and_channel.substr(0U, hash));
+        const std::string ch_token = trim(peer_and_channel.substr(hash + 1U));
+        has_channel = true;
+        if (ch_token.empty() || !parseI32Token(ch_token, parsed_channel)) {
+          out_error = "node " + std::to_string(node_pos + 1U) + ": invalid channel";
+          return false;
+        }
+      }
+
+      if (!resolveTopologyPeerToken(peer_token, node.mac)) {
+        out_error = "node " + std::to_string(node_pos + 1U) + ": peer is not a valid MAC or paired index";
+        return false;
+      }
+
+      if (node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) {
+        if (has_channel) {
+          out_error = "node " + std::to_string(node_pos + 1U) + ": channel is only allowed for SM/RM";
+          return false;
+        }
+        node.vi = -1;
+      } else if (node.type == ChainNodeType::SemuChild) {
+        if (!has_channel) {
+          out_error = "node " + std::to_string(node_pos + 1U) + ": SM requires #<CH>";
+          return false;
+        }
+        if (parsed_channel < 0 || parsed_channel > 7) {
+          out_error = "node " + std::to_string(node_pos + 1U) + ": SM channel must be 0..7";
+          return false;
+        }
+        node.vi = parsed_channel;
+      } else {
+        if (!has_channel) {
+          out_error = "node " + std::to_string(node_pos + 1U) + ": RM requires #<CH>";
+          return false;
+        }
+        if (parsed_channel < 0 || parsed_channel > 15) {
+          out_error = "node " + std::to_string(node_pos + 1U) + ": RM channel must be 0..15";
+          return false;
+        }
+        node.vi = parsed_channel;
+      }
+
+      out_chain.push_back(node);
+      ++node_pos;
+      if (sep == std::string::npos) {
+        break;
+      }
+      cursor = sep + 1U;
+    }
+    return !out_chain.empty();
+  };
+
+  if (cmd_lower == "topology.chain.help" || startsWith(cmd_lower, "topology.chain.help ") ||
+      cmd_lower == "topology.chain.set.help" || startsWith(cmd_lower, "topology.chain.set.help ")) {
+    printTopologyChainHelp();
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.show" || startsWith(cmd_lower, "topology.chain.show ")) {
+    if (!requireNoChainArgs("topology.chain.show")) {
+      return true;
+    }
+    std::string json_text;
+    TopologyChainPlanDebug debug{};
+    uint32_t topology_version = 1U;
+    size_t target_count = 0U;
+    std::string err;
+    if (!loadFixedChainForRead(json_text, debug, topology_version, target_count, err)) {
+      if (!err.empty()) {
+        writef("[MASTER][TOPO][CHAIN] invalid path=%s reason=%s", kFixedChainPath, err.c_str());
+      }
+      return true;
+    }
+
+    writef("[MASTER][TOPO][CHAIN] path=%s topo_ver=%lu nodes=%u relay_groups=%u seeds=%u targets=%u",
+           kFixedChainPath,
+           static_cast<unsigned long>(topology_version),
+           static_cast<unsigned int>(debug.nodes.size()),
+           static_cast<unsigned int>(debug.groups.size()),
+           static_cast<unsigned int>(debug.seed_u32.size()),
+           static_cast<unsigned int>(target_count));
+
+    if (!debug.seed_u32.empty()) {
+      std::string seed_csv;
+      for (size_t i = 0; i < debug.seed_u32.size(); ++i) {
+        if (i > 0U) seed_csv += ",";
+        seed_csv += std::to_string(debug.seed_u32[i]);
+      }
+      writef("[MASTER][TOPO][CHAIN] seed_csv=%s", seed_csv.c_str());
+    }
+
+    for (const auto& node : debug.nodes) {
+      writef("  %s", formatChainNodeLong(node).c_str());
+    }
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.validate" || startsWith(cmd_lower, "topology.chain.validate ")) {
+    if (!requireNoChainArgs("topology.chain.validate")) {
+      return true;
+    }
+    std::string json_text;
+    TopologyChainPlanDebug debug{};
+    uint32_t topology_version = 1U;
+    size_t target_count = 0U;
+    std::string err;
+    if (!loadFixedChainForRead(json_text, debug, topology_version, target_count, err)) {
+      if (!err.empty()) {
+        writef("[MASTER][TOPO][CHAIN] validate=FAIL path=%s reason=%s", kFixedChainPath, err.c_str());
+      }
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] validate=OK path=%s topo_ver=%lu nodes=%u relay_groups=%u seeds=%u targets=%u",
+           kFixedChainPath,
+           static_cast<unsigned long>(topology_version),
+           static_cast<unsigned int>(debug.nodes.size()),
+           static_cast<unsigned int>(debug.groups.size()),
+           static_cast<unsigned int>(debug.seed_u32.size()),
+           static_cast<unsigned int>(target_count));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.graph" || startsWith(cmd_lower, "topology.chain.graph ")) {
+    if (!requireNoChainArgs("topology.chain.graph")) {
+      return true;
+    }
+    std::string json_text;
+    TopologyChainPlanDebug debug{};
+    uint32_t topology_version = 1U;
+    size_t target_count = 0U;
+    std::string err;
+    if (!loadFixedChainForRead(json_text, debug, topology_version, target_count, err)) {
+      (void)topology_version;
+      (void)target_count;
+      if (!err.empty()) {
+        writef("[MASTER][TOPO][GRAPH] invalid path=%s reason=%s", kFixedChainPath, err.c_str());
+      }
+      return true;
+    }
+    (void)topology_version;
+    (void)target_count;
+
+    struct GraphSegment {
+      size_t separator = 0U;
+      std::vector<size_t> relay_nodes{};
+    };
+    std::vector<GraphSegment> segments{};
+    for (size_t i = 0U; i < debug.nodes.size();) {
+      GraphSegment seg{};
+      seg.separator = i;
+      ++i;
+      while (i < debug.nodes.size() && isChainRelay(debug.nodes[i].type)) {
+        seg.relay_nodes.push_back(i);
+        ++i;
+      }
+      segments.push_back(seg);
+    }
+
+    auto boxTop = [](size_t inner_width) -> std::string {
+      return "+" + std::string(inner_width, '-') + "+";
+    };
+    auto boxBody = [](const std::string& text, size_t inner_width) -> std::string {
+      std::string clipped = text;
+      if (clipped.size() > inner_width) {
+        if (inner_width > 3U) {
+          clipped = clipped.substr(0U, inner_width - 3U) + "...";
+        } else {
+          clipped = clipped.substr(0U, inner_width);
+        }
+      }
+      const size_t total_pad = inner_width - clipped.size();
+      const size_t left_pad = total_pad / 2U;
+      const size_t right_pad = total_pad - left_pad;
+      return "|" + std::string(left_pad, ' ') + clipped + std::string(right_pad, ' ') + "|";
+    };
+
+    constexpr size_t kSeparatorBoxInner = 56U;
+    constexpr size_t kRelayBoxInner = 38U;
+    writef("[MASTER][TOPO][GRAPH] view=vertical.blocks path=%s nodes=%u",
+           kFixedChainPath,
+           static_cast<unsigned int>(debug.nodes.size()));
+    io_.writeln("");
+
+    for (size_t s = 0U; s < segments.size(); ++s) {
+      const bool is_last = (s + 1U == segments.size());
+      const std::string branch = is_last ? "`-- " : "|-- ";
+      const std::string child_prefix = is_last ? "    " : "|   ";
+
+      const ChainNode& separator = debug.nodes[segments[s].separator];
+      io_.writeln(branch + boxTop(kSeparatorBoxInner));
+      io_.writeln(child_prefix + boxBody(formatChainNodeLong(separator), kSeparatorBoxInner));
+      io_.writeln(child_prefix + boxTop(kSeparatorBoxInner));
+
+      for (size_t relay_idx : segments[s].relay_nodes) {
+        const ChainNode& relay = debug.nodes[relay_idx];
+        io_.writeln(child_prefix + boxTop(kRelayBoxInner));
+        io_.writeln(child_prefix + boxBody(formatChainNodeLong(relay), kRelayBoxInner));
+        io_.writeln(child_prefix + boxTop(kRelayBoxInner));
+      }
+
+      if (!is_last) {
+        io_.writeln("|");
+      }
+    }
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.clear" || startsWith(cmd_lower, "topology.chain.clear ")) {
+    if (!requireNoChainArgs("topology.chain.clear")) {
+      return true;
+    }
+    std::string load_error;
+    (void)loadEditorFromFixedFile(true, load_error);
+    topology_edit.chain.clear();
+    topology_edit.seeds.clear();
+    size_t relay_groups = 0U;
+    std::string write_error;
+    if (!persistEditorRawToFixed(relay_groups, write_error)) {
+      writef("[MASTER][TOPO][CHAIN] clear failed path=%s reason=%s",
+             kFixedChainPath,
+             write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] cleared path=%s topo_ver=%lu",
+           kFixedChainPath,
+           static_cast<unsigned long>(topology_edit.topology_version));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.add") {
+    io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.add <S|R|SM|RM> <paired_index|MAC> [vi]");
+    return true;
+  }
+  if (startsWith(cmd_lower, "topology.chain.add ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() < 3U || tok.size() > 4U) {
+      io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.add <S|R|SM|RM> <paired_index|MAC> [vi]");
+      return true;
+    }
+    std::string load_error;
+    if (!loadEditorFromFixedFile(true, load_error)) {
+      writef("[MASTER][TOPO][CHAIN] add failed path=%s reason=%s", kFixedChainPath, load_error.c_str());
+      return true;
+    }
+
+    TopologyEditNodeState node{};
+    if (!parseChainNodeType(tok[1], node.type)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] invalid type (use S|R|SM|RM)");
+      return true;
+    }
+    if (!resolveTopologyPeerToken(tok[2], node.mac)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] peer must be paired index or MAC");
+      return true;
+    }
+    node.vi = (node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) ? -1 : 0;
+    if (tok.size() == 4U) {
+      int32_t vi = 0;
+      if (!parseI32Token(tok[3], vi)) {
+        io_.writeln("[MASTER][TOPO][CHAIN] invalid vi");
+        return true;
+      }
+      node.vi = vi;
+    }
+    if ((node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) && node.vi != -1) {
+      io_.writeln("[MASTER][TOPO][CHAIN] physical node vi must be -1");
+      return true;
+    }
+    if (node.type == ChainNodeType::SemuChild && (node.vi < 0 || node.vi > 7)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] semu vi out of range (0..7)");
+      return true;
+    }
+    if (node.type == ChainNodeType::RemuChild && (node.vi < 0 || node.vi > 15)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] remu vi out of range (0..15)");
+      return true;
+    }
+
+    topology_edit.chain.push_back(node);
+    size_t relay_groups = 0U;
+    std::string write_error;
+    if (!persistEditorRawToFixed(relay_groups, write_error)) {
+      writef("[MASTER][TOPO][CHAIN] add failed path=%s reason=%s", kFixedChainPath, write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] add ok index=%u type=%s mac=%s vi=%d nodes=%u relay_groups=%u",
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           chainTypeToken(node.type),
+           macToPrintable(node.mac).c_str(),
+           static_cast<int>(node.vi),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.edit") {
+    io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.edit <index> <S|R|SM|RM> <paired_index|MAC> [vi]");
+    return true;
+  }
+  if (startsWith(cmd_lower, "topology.chain.edit ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() < 4U || tok.size() > 5U) {
+      io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.edit <index> <S|R|SM|RM> <paired_index|MAC> [vi]");
+      return true;
+    }
+    std::string load_error;
+    if (!loadEditorFromFixedFile(true, load_error)) {
+      writef("[MASTER][TOPO][CHAIN] edit failed path=%s reason=%s", kFixedChainPath, load_error.c_str());
+      return true;
+    }
+    if (topology_edit.chain.empty()) {
+      io_.writeln("[MASTER][TOPO][CHAIN] edit failed: chain is empty");
+      return true;
+    }
+    size_t pos = 0U;
+    if (!parseChainIndexToken(tok[1], topology_edit.chain.size(), pos)) {
+      writef("[MASTER][TOPO][CHAIN] invalid index (allowed 1..%u or 0..%u)",
+             static_cast<unsigned int>(topology_edit.chain.size()),
+             static_cast<unsigned int>(topology_edit.chain.size() - 1U));
+      return true;
+    }
+
+    TopologyEditNodeState node{};
+    if (!parseChainNodeType(tok[2], node.type)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] invalid type (use S|R|SM|RM)");
+      return true;
+    }
+    if (!resolveTopologyPeerToken(tok[3], node.mac)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] peer must be paired index or MAC");
+      return true;
+    }
+    node.vi = (node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) ? -1 : 0;
+    if (tok.size() == 5U) {
+      int32_t vi = 0;
+      if (!parseI32Token(tok[4], vi)) {
+        io_.writeln("[MASTER][TOPO][CHAIN] invalid vi");
+        return true;
+      }
+      node.vi = vi;
+    }
+    if ((node.type == ChainNodeType::Sensor || node.type == ChainNodeType::Relay) && node.vi != -1) {
+      io_.writeln("[MASTER][TOPO][CHAIN] physical node vi must be -1");
+      return true;
+    }
+    if (node.type == ChainNodeType::SemuChild && (node.vi < 0 || node.vi > 7)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] semu vi out of range (0..7)");
+      return true;
+    }
+    if (node.type == ChainNodeType::RemuChild && (node.vi < 0 || node.vi > 15)) {
+      io_.writeln("[MASTER][TOPO][CHAIN] remu vi out of range (0..15)");
+      return true;
+    }
+
+    topology_edit.chain[pos] = node;
+    size_t relay_groups = 0U;
+    std::string write_error;
+    if (!persistEditorRawToFixed(relay_groups, write_error)) {
+      writef("[MASTER][TOPO][CHAIN] edit failed path=%s reason=%s", kFixedChainPath, write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] edit ok index=%u type=%s mac=%s vi=%d nodes=%u relay_groups=%u",
+           static_cast<unsigned int>(pos + 1U),
+           chainTypeToken(node.type),
+           macToPrintable(node.mac).c_str(),
+           static_cast<int>(node.vi),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.del") {
+    io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.del <index>");
+    return true;
+  }
+  if (startsWith(cmd_lower, "topology.chain.del ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() != 2U) {
+      io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.del <index>");
+      return true;
+    }
+    std::string load_error;
+    if (!loadEditorFromFixedFile(true, load_error)) {
+      writef("[MASTER][TOPO][CHAIN] del failed path=%s reason=%s", kFixedChainPath, load_error.c_str());
+      return true;
+    }
+    if (topology_edit.chain.empty()) {
+      io_.writeln("[MASTER][TOPO][CHAIN] del failed: chain is empty");
+      return true;
+    }
+    size_t pos = 0U;
+    if (!parseChainIndexToken(tok[1], topology_edit.chain.size(), pos)) {
+      writef("[MASTER][TOPO][CHAIN] invalid index (allowed 1..%u or 0..%u)",
+             static_cast<unsigned int>(topology_edit.chain.size()),
+             static_cast<unsigned int>(topology_edit.chain.size() - 1U));
+      return true;
+    }
+    topology_edit.chain.erase(topology_edit.chain.begin() + pos);
+    size_t relay_groups = 0U;
+    std::string write_error;
+    if (!persistEditorRawToFixed(relay_groups, write_error)) {
+      writef("[MASTER][TOPO][CHAIN] del failed path=%s reason=%s", kFixedChainPath, write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] del ok index=%u nodes=%u relay_groups=%u",
+           static_cast<unsigned int>(pos + 1U),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.move") {
+    io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.move <from_index> <to_index>");
+    return true;
+  }
+  if (startsWith(cmd_lower, "topology.chain.move ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() != 3U) {
+      io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.move <from_index> <to_index>");
+      return true;
+    }
+    std::string load_error;
+    if (!loadEditorFromFixedFile(true, load_error)) {
+      writef("[MASTER][TOPO][CHAIN] move failed path=%s reason=%s", kFixedChainPath, load_error.c_str());
+      return true;
+    }
+    if (topology_edit.chain.empty()) {
+      io_.writeln("[MASTER][TOPO][CHAIN] move failed: chain is empty");
+      return true;
+    }
+    size_t from = 0U;
+    size_t to = 0U;
+    if (!parseChainIndexToken(tok[1], topology_edit.chain.size(), from) ||
+        !parseChainIndexToken(tok[2], topology_edit.chain.size(), to)) {
+      writef("[MASTER][TOPO][CHAIN] invalid index (allowed 1..%u or 0..%u)",
+             static_cast<unsigned int>(topology_edit.chain.size()),
+             static_cast<unsigned int>(topology_edit.chain.size() - 1U));
+      return true;
+    }
+    if (from != to) {
+      const TopologyEditNodeState moved = topology_edit.chain[from];
+      topology_edit.chain.erase(topology_edit.chain.begin() + from);
+      if (to > from) {
+        --to;
+      }
+      topology_edit.chain.insert(topology_edit.chain.begin() + to, moved);
+    }
+    size_t relay_groups = 0U;
+    std::string write_error;
+    if (!persistEditorRawToFixed(relay_groups, write_error)) {
+      writef("[MASTER][TOPO][CHAIN] move failed path=%s reason=%s", kFixedChainPath, write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] move ok from=%u to=%u nodes=%u relay_groups=%u",
+           static_cast<unsigned int>(from + 1U),
+           static_cast<unsigned int>(to + 1U),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.set") {
+    io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.set <chain_spec>");
+    return true;
+  }
+  if (startsWith(cmd_lower, "topology.chain.set ")) {
+    std::string chain_spec = trim(cmd_line.substr(std::strlen("topology.chain.set ")));
+    if (chain_spec.empty()) {
+      io_.writeln("[MASTER][TOPO][CHAIN] usage: topology.chain.set <chain_spec>");
+      return true;
+    }
+
+    std::vector<TopologyEditNodeState> parsed_chain{};
+    std::string parse_error;
+    if (!parseChainSpec(chain_spec, parsed_chain, parse_error)) {
+      writef("[MASTER][TOPO][CHAIN] set failed: %s", parse_error.c_str());
+      return true;
+    }
+
+    TopologyEditState old = topology_edit;
+    std::string load_error;
+    if (!loadEditorFromFixedFile(true, load_error)) {
+      topology_edit = old;
+      topology_edit.topology_version = static_cast<uint32_t>(std::time(nullptr));
+      if (topology_edit.topology_version == 0U) topology_edit.topology_version = 1U;
+      topology_edit.seeds.clear();
+    }
+    topology_edit.chain = parsed_chain;
+    topology_edit.seeds.clear();
+
+    size_t relay_groups = 0U;
+    size_t target_count = 0U;
+    std::string write_error;
+    if (!persistEditorValidatedToFixed(relay_groups, target_count, write_error)) {
+      topology_edit = old;
+      writef("[MASTER][TOPO][CHAIN] set failed: %s", write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] set ok path=%s nodes=%u relay_groups=%u seeds=%u targets=%u",
+           kFixedChainPath,
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups),
+           static_cast<unsigned int>(topology_edit.seeds.size()),
+           static_cast<unsigned int>(target_count));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.fix" || startsWith(cmd_lower, "topology.chain.fix ")) {
+    if (!requireNoChainArgs("topology.chain.fix")) {
+      return true;
+    }
+    std::string load_error;
+    if (!loadEditorFromFixedFile(true, load_error)) {
+      writef("[MASTER][TOPO][CHAIN] fix failed path=%s reason=%s", kFixedChainPath, load_error.c_str());
+      return true;
+    }
+    size_t relay_groups = 0U;
+    size_t target_count = 0U;
+    std::string write_error;
+    if (!persistEditorValidatedToFixed(relay_groups, target_count, write_error)) {
+      writef("[MASTER][TOPO][CHAIN] fix failed: %s", write_error.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] fix ok path=%s topo_ver=%lu nodes=%u relay_groups=%u seeds=%u targets=%u",
+           kFixedChainPath,
+           static_cast<unsigned long>(topology_edit.topology_version),
+           static_cast<unsigned int>(topology_edit.chain.size()),
+           static_cast<unsigned int>(relay_groups),
+           static_cast<unsigned int>(topology_edit.seeds.size()),
+           static_cast<unsigned int>(target_count));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.backup" || startsWith(cmd_lower, "topology.chain.backup ")) {
+    if (!requireNoChainArgs("topology.chain.backup")) {
+      return true;
+    }
+    if (ota_push_storage_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][CHAIN] backup failed: local storage backend unavailable");
+      return true;
+    }
+    std::string src;
+    std::string read_msg;
+    if (!readTextFileLocal(*ota_push_storage_, kFixedChainPath, src, read_msg)) {
+      writef("[MASTER][TOPO][CHAIN] backup failed path=%s reason=%s", kFixedChainPath, read_msg.c_str());
+      return true;
+    }
+    std::string write_msg;
+    const std::string backup_path = std::string(kFixedChainPath) + ".bak";
+    if (!writeTextFileLocal(*ota_push_storage_, backup_path, src, write_msg)) {
+      writef("[MASTER][TOPO][CHAIN] backup failed path=%s reason=%s", backup_path.c_str(), write_msg.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] backup ok src=%s dst=%s bytes=%u",
+           kFixedChainPath,
+           backup_path.c_str(),
+           static_cast<unsigned int>(src.size()));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.restore" || startsWith(cmd_lower, "topology.chain.restore ")) {
+    if (!requireNoChainArgs("topology.chain.restore")) {
+      return true;
+    }
+    if (ota_push_storage_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][CHAIN] restore failed: local storage backend unavailable");
+      return true;
+    }
+    const std::string backup_path = std::string(kFixedChainPath) + ".bak";
+    std::string src;
+    std::string read_msg;
+    if (!readTextFileLocal(*ota_push_storage_, backup_path, src, read_msg)) {
+      writef("[MASTER][TOPO][CHAIN] restore failed path=%s reason=%s", backup_path.c_str(), read_msg.c_str());
+      return true;
+    }
+    std::string write_msg;
+    if (!writeTextFileLocal(*ota_push_storage_, kFixedChainPath, src, write_msg)) {
+      writef("[MASTER][TOPO][CHAIN] restore failed path=%s reason=%s", kFixedChainPath, write_msg.c_str());
+      return true;
+    }
+    writef("[MASTER][TOPO][CHAIN] restore ok src=%s dst=%s bytes=%u",
+           backup_path.c_str(),
+           kFixedChainPath,
+           static_cast<unsigned int>(src.size()));
+    return true;
+  }
+
+  if (cmd_lower == "topology.chain.apply" || startsWith(cmd_lower, "topology.chain.apply ")) {
+    if (!requireNoChainArgs("topology.chain.apply")) {
+      return true;
+    }
+    std::string json_text;
+    TopologyChainPlanDebug debug{};
+    uint32_t topology_version = 1U;
+    size_t target_count = 0U;
+    std::string err;
+    if (!loadFixedChainForRead(json_text, debug, topology_version, target_count, err)) {
+      writef("[MASTER][TOPO][CHAIN] apply blocked: invalid path=%s reason=%s",
+             kFixedChainPath,
+             err.c_str());
+      return true;
+    }
+    // Avoid recursive re-entry into this large handler; rewrite command and
+    // continue in the same frame so it falls through to topology.deploy.file.
+    cmd_line = "topology.deploy.file /o/s/tp.json";
+    cmd_lower = "topology.deploy.file /o/s/tp.json";
+  }
+
+  if (cmd_lower == "topology.chain.verify" || startsWith(cmd_lower, "topology.chain.verify ")) {
+    const std::vector<std::string> tok = splitTokens(cmd_line);
+    if (tok.size() > 2U) {
+      io_.writeln("[MASTER][TOPO][VERIFY] usage: topology.chain.verify [timeout_ms]");
+      return true;
+    }
+    uint32_t timeout_ms = 6000U;
+    if (tok.size() == 2U) {
+      if (!parseU32Token(tok[1], timeout_ms) || timeout_ms < 1000U || timeout_ms > 120000U) {
+        io_.writeln("[MASTER][TOPO][VERIFY] invalid timeout_ms (1000..120000)");
+        return true;
+      }
+    }
+    if (management_transport_ == nullptr) {
+      io_.writeln("[MASTER][TOPO][VERIFY] management path unavailable");
+      return true;
+    }
+
+    std::string json_text;
+    TopologyChainPlanDebug debug{};
+    uint32_t topology_version = 1U;
+    size_t target_count = 0U;
+    std::string read_error;
+    if (!loadFixedChainForRead(json_text, debug, topology_version, target_count, read_error)) {
+      writef("[MASTER][TOPO][VERIFY] blocked: invalid path=%s reason=%s",
+             kFixedChainPath,
+             read_error.c_str());
+      return true;
+    }
+
+    std::vector<TopologyDeployTarget> targets{};
+    std::string parse_error;
+    if (!parseTopologyChainJson(json_text,
+                                topology_version,
+                                targets,
+                                topology_version,
+                                parse_error,
+                                nullptr)) {
+      writef("[MASTER][TOPO][VERIFY] blocked: parse failed path=%s reason=%s",
+             kFixedChainPath,
+             parse_error.c_str());
+      return true;
+    }
+    if (targets.empty()) {
+      io_.writeln("[MASTER][TOPO][VERIFY] no targets in topology chain");
+      return true;
+    }
+
+    std::vector<MacAddress> paired_peers{};
+    manager_.getPersistedPeers(paired_peers);
+    if (paired_peers.empty()) {
+      io_.writeln("[MASTER][TOPO][VERIFY] no paired peers available");
+      return true;
+    }
+
+    clearTopologyVerifySession_();
+    topology_verify_.active = true;
+    topology_verify_.started_ms = nowMs();
+    topology_verify_.deadline_ms = topology_verify_.started_ms + timeout_ms;
+    topology_verify_.topology_version = topology_version;
+    topology_verify_.source_path = kFixedChainPath;
+    topology_verify_.targets.clear();
+    topology_verify_.requests.clear();
+    topology_verify_.targets.reserve(targets.size());
+    topology_verify_.requests.reserve(targets.size());
+
+    uint32_t queued_requests = 0U;
+    uint32_t skipped_not_paired = 0U;
+    uint32_t submit_failed = 0U;
+    ManagementController mgmt(*management_transport_);
+    mgmt.setNextReqId(correlation_id_);
+    for (const auto& target : targets) {
+      TopologyVerifyTargetState verify_target{};
+      verify_target.target = target.target;
+      verify_target.expected_snapshot = target.snapshot;
+      verify_target.slots_done = true;
+      verify_target.slots_ok = true;
+      verify_target.slots_reason = "slots_check_not_requested";
+      const size_t target_index = topology_verify_.targets.size();
+      topology_verify_.targets.push_back(verify_target);
+      TopologyVerifyTargetState& state = topology_verify_.targets.back();
+
+      const bool is_paired = std::find(paired_peers.begin(),
+                                       paired_peers.end(),
+                                       target.target) != paired_peers.end();
+      if (!is_paired) {
+        state.status_done = true;
+        state.status_ok = false;
+        state.status_reason = "target_not_paired";
+        ++skipped_not_paired;
+        continue;
+      }
+
+      uint32_t req_id = 0U;
+      const bool submit_ok =
+          submitRuntimeTargeted_(mgmt,
+                                 static_cast<uint16_t>(ManagementCommandId::TopologyStatusGet),
+                                 {},
+                                 &req_id,
+                                 0U,
+                                 false,
+                                 &target.target);
+      if (!submit_ok || req_id == 0U) {
+        state.status_done = true;
+        state.status_ok = false;
+        state.status_reason = "status_submit_failed";
+        ++submit_failed;
+        continue;
+      }
+
+      state.status_req_id = req_id;
+      TopologyVerifyRequestState req{};
+      req.target_index = target_index;
+      req.kind = TopologyVerifyReqKind::Status;
+      topology_verify_.requests[req_id] = req;
+      ++queued_requests;
+    }
+    correlation_id_ = mgmt.nextReqId();
+
+    writef("[MASTER][TOPO][VERIFY] started path=%s topo_ver=%lu mode=status_checksum targets=%u queued=%u skipped_not_paired=%u submit_failed=%u timeout_ms=%lu",
+           kFixedChainPath,
+           static_cast<unsigned long>(topology_verify_.topology_version),
+           static_cast<unsigned int>(topology_verify_.targets.size()),
+           static_cast<unsigned int>(queued_requests),
+           static_cast<unsigned int>(skipped_not_paired),
+           static_cast<unsigned int>(submit_failed),
+           static_cast<unsigned long>(timeout_ms));
+    maybeFinalizeTopologyVerifySession_();
+    return true;
+  }
+
   if (cmd_lower == "topology.edit.help") {
     io_.writeln("[MASTER][TOPO][EDIT] commands:");
     io_.writeln("  topology.edit.new [topo_ver] [seed_csv]");
@@ -3790,6 +5196,8 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
     io_.writeln("  topology.edit.save [path]");
     io_.writeln("  topology.edit.load [path]");
     io_.writeln("  topology.file.show [path]");
+    io_.writeln("  topology.chain.help");
+    io_.writeln("  topology.chain.set.help");
     io_.writeln("[MASTER][TOPO][EDIT] rules: start/end with S|SM, no adjacent S|SM, R and RM adjacency allowed");
     return true;
   }
@@ -4704,6 +6112,18 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
           uint32_t queued = 0U;
           uint32_t failed = 0U;
           uint32_t skipped_not_paired = 0U;
+          auto settleDeployRuntime = [&](uint32_t settle_ms) {
+            if (settle_ms == 0U) return;
+            const uint32_t start_ms = nowMs();
+            while (static_cast<uint32_t>(nowMs() - start_ms) < settle_ms) {
+              const uint32_t now_ms = nowMs();
+              if (shouldTickManagementRuntimeFromCli_() && management_runtime_ != nullptr) {
+                management_runtime_->tick(now_ms, 2U, 8U, 16U);
+              }
+              pumpManagementMailbox();
+              pumpDescriptorQueue(now_ms);
+            }
+          };
           for (const auto& target : targets) {
             const bool is_paired = std::find(paired_peers.begin(),
                                              paired_peers.end(),
@@ -4728,15 +6148,28 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
             mgmt.setNextReqId(correlation_id_);
             uint32_t stage_req = 0U;
             uint32_t commit_req = 0U;
-            const bool staged = submitRuntimeTargeted_(mgmt,
-                                                       static_cast<uint16_t>(ManagementCommandId::TopologyStageSet),
-                                                       management_utils::buildTopologyStagePayload(target.snapshot),
-                                                       &stage_req,
-                                                       0U,
-                                                       false,
-                                                       &target.target);
+            bool staged = submitRuntimeTargeted_(mgmt,
+                                                 static_cast<uint16_t>(ManagementCommandId::TopologyStageSet),
+                                                 management_utils::buildTopologyStagePayload(target.snapshot),
+                                                 &stage_req,
+                                                 0U,
+                                                 false,
+                                                 &target.target);
+            if (!staged) {
+              // One bounded retry to absorb transient queue pressure.
+              settleDeployRuntime(120U);
+              staged = submitRuntimeTargeted_(mgmt,
+                                              static_cast<uint16_t>(ManagementCommandId::TopologyStageSet),
+                                              management_utils::buildTopologyStagePayload(target.snapshot),
+                                              &stage_req,
+                                              0U,
+                                              false,
+                                              &target.target);
+            }
             bool committed = false;
             if (staged) {
+              // Give stage a short chance to settle before commit submit.
+              settleDeployRuntime(120U);
               committed = submitRuntimeTargeted_(mgmt,
                                                  static_cast<uint16_t>(ManagementCommandId::TopologyCommit),
                                                  {},
@@ -4744,6 +6177,18 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
                                                  0U,
                                                  false,
                                                  &target.target);
+              if (!committed) {
+                // One bounded retry for transient queue pressure.
+                settleDeployRuntime(120U);
+                committed = submitRuntimeTargeted_(mgmt,
+                                                   static_cast<uint16_t>(ManagementCommandId::TopologyCommit),
+                                                   {},
+                                                   &commit_req,
+                                                   0U,
+                                                   false,
+                                                   &target.target);
+              }
+              settleDeployRuntime(80U);
             }
             correlation_id_ = mgmt.nextReqId();
             if (staged && committed) {
@@ -4766,6 +6211,9 @@ bool MasterCli::handleTopologyCommands(const std::string& line, const std::strin
                  static_cast<unsigned int>(failed),
                  static_cast<unsigned int>(skipped_not_paired),
                  static_cast<unsigned long>(topology_version));
+          if (queued > 0U) {
+            io_.writeln("[MASTER][TOPO] tip: run topology.chain.verify to confirm committed status on each target");
+          }
           return true;
         }
       }
@@ -6039,7 +7487,7 @@ bool MasterCli::handleLoggerCommands(const std::string& line, const std::string&
     correlation_id_ = mgmt_controller.nextReqId();
 
     const uint32_t now_ms = nowMs();
-    if (management_runtime_ != nullptr) {
+    if (shouldTickManagementRuntimeFromCli_()) {
       management_runtime_->tick(now_ms);
     }
 
@@ -7271,6 +8719,7 @@ void MasterCli::pumpManagementMailbox() {
       continue;
     }
     ++mailbox_processed_responses_;
+    handleTopologyVerifyResponse_(resp);
     if (resp.cmd_id == static_cast<uint16_t>(ManagementCommandId::LiveMonitorStatusGet)) {
       const bool show_live_status =
           live_monitor_status_pending_ &&
@@ -7316,7 +8765,34 @@ void MasterCli::pumpManagementMailbox() {
         }
       };
       ManagementTopologyStatusPayload topo{};
+      bool committed_state_known = false;
+      bool committed_groups_known = false;
+      bool index_window_known = false;
+      bool committed_checksum_known = false;
+      bool parsed_status = false;
       if (management_utils::parseTopologyStatusPayload(resp.payload, topo)) {
+        parsed_status = true;
+        committed_state_known = true;
+        committed_groups_known = true;
+        index_window_known = true;
+        committed_checksum_known = true;
+      } else if (!resp.payload.empty()) {
+        DescriptorResponse desc{};
+        if (manager_.decodeDescriptorResponsePayload(resp.payload.data(), resp.payload.size(), desc) &&
+            desc.type == DescriptorResponseType::Ack) {
+          ParsedTopologyStatusForVerify parsed{};
+          if (parseTopologyStatusAckMessageForVerify(desc.message, parsed)) {
+            topo = parsed.status;
+            parsed_status = true;
+            committed_state_known = parsed.committed_state_known;
+            committed_groups_known = parsed.committed_groups_known;
+            index_window_known = parsed.index_window_known;
+            committed_checksum_known = parsed.committed_checksum_known;
+          }
+        }
+      }
+
+      if (parsed_status) {
         io_.writeln("[MASTER][TOPO] status");
         writef("  schema         : v%u", static_cast<unsigned int>(topo.schema_version));
         writef("  staged         : %s", topo.has_staged ? "yes" : "no");
@@ -7324,11 +8800,25 @@ void MasterCli::pumpManagementMailbox() {
         writef("  staged_ver     : %lu", static_cast<unsigned long>(topo.staged_version));
         writef("  committed_ver  : %lu", static_cast<unsigned long>(topo.committed_version));
         writef("  staged_state   : %s", topoStateLabel(topo.staged_state));
-        writef("  committed_state: %s", topoStateLabel(topo.committed_state));
+        if (committed_state_known) {
+          writef("  committed_state: %s", topoStateLabel(topo.committed_state));
+        } else {
+          io_.writeln("  committed_state: n/a");
+        }
         writef("  staged_slots   : %u", static_cast<unsigned int>(topo.staged_slot_count));
         writef("  committed_slots: %u", static_cast<unsigned int>(topo.committed_slot_count));
-        writef("  staged_groups  : %u", static_cast<unsigned int>(topo.staged_group_count));
-        writef("  committed_groups: %u", static_cast<unsigned int>(topo.committed_group_count));
+        if (committed_groups_known) {
+          writef("  staged_groups  : %u", static_cast<unsigned int>(topo.staged_group_count));
+          writef("  committed_groups: %u", static_cast<unsigned int>(topo.committed_group_count));
+        }
+        if (index_window_known) {
+          writef("  index_neg      : %u", static_cast<unsigned int>(topo.index_neg));
+          writef("  index_pos      : %u", static_cast<unsigned int>(topo.index_pos));
+        }
+        if (committed_checksum_known) {
+          writef("  committed_checksum: 0x%08lX",
+                 static_cast<unsigned long>(topo.committed_checksum));
+        }
       } else if (resp.status == ManagementStatus::OkDeferred || resp.payload.empty()) {
         io_.writeln("[MASTER][TOPO] status request accepted (remote/async)");
       } else {
@@ -7689,6 +9179,294 @@ void MasterCli::pumpManagementMailbox() {
   }
 }
 
+bool MasterCli::compareTopologySlotsForVerify_(const ManagementTopologySnapshotPayload& expected,
+                                               const std::vector<ManagementTopologySlotPayload>& actual_slots,
+                                               std::string& out_reason) const {
+  out_reason.clear();
+  std::map<uint8_t, ManagementTopologySlotPayload> expected_enabled{};
+  for (const auto& slot : expected.slots) {
+    if (!slot.enabled) {
+      continue;
+    }
+    expected_enabled[slot.slot_index] = slot;
+  }
+
+  std::map<uint8_t, ManagementTopologySlotPayload> actual_enabled{};
+  for (const auto& slot : actual_slots) {
+    if (!slot.enabled) {
+      continue;
+    }
+    const auto it = actual_enabled.find(slot.slot_index);
+    if (it != actual_enabled.end()) {
+      out_reason = "duplicate_actual_slot_index_" + std::to_string(static_cast<unsigned int>(slot.slot_index));
+      return false;
+    }
+    actual_enabled[slot.slot_index] = slot;
+  }
+
+  if (expected_enabled.size() != actual_enabled.size()) {
+    out_reason = "enabled_slot_count_mismatch expected=" +
+                 std::to_string(static_cast<unsigned int>(expected_enabled.size())) +
+                 " actual=" + std::to_string(static_cast<unsigned int>(actual_enabled.size()));
+    return false;
+  }
+
+  for (const auto& kv : expected_enabled) {
+    const uint8_t idx = kv.first;
+    const auto actual_it = actual_enabled.find(idx);
+    if (actual_it == actual_enabled.end()) {
+      out_reason = "missing_slot_index_" + std::to_string(static_cast<unsigned int>(idx));
+      return false;
+    }
+    const ManagementTopologySlotPayload& exp = kv.second;
+    const ManagementTopologySlotPayload& act = actual_it->second;
+    if (exp.peer != act.peer ||
+        exp.peer_role != act.peer_role ||
+        exp.group_id != act.group_id ||
+        exp.relative_index != act.relative_index ||
+        exp.local_virtual_index != act.local_virtual_index ||
+        exp.peer_virtual_index != act.peer_virtual_index ||
+        exp.axis_order != act.axis_order ||
+        exp.delay_ms != act.delay_ms ||
+        exp.hold_ms != act.hold_ms) {
+      out_reason = "slot_mismatch_index_" + std::to_string(static_cast<unsigned int>(idx));
+      return false;
+    }
+  }
+  return true;
+}
+
+void MasterCli::clearTopologyVerifySession_(const char* reason) {
+  if (topology_verify_.active && reason != nullptr && reason[0] != '\0') {
+    writef("[MASTER][TOPO][VERIFY] aborted reason=%s", reason);
+  }
+  topology_verify_ = TopologyVerifySessionState{};
+}
+
+void MasterCli::maybeFinalizeTopologyVerifySession_() {
+  if (!topology_verify_.active) {
+    return;
+  }
+  uint32_t passed = 0U;
+  uint32_t failed = 0U;
+  uint32_t pending = 0U;
+  for (auto& target : topology_verify_.targets) {
+    const bool done = target.status_done && target.slots_done;
+    if (!done) {
+      ++pending;
+      continue;
+    }
+    const bool ok = target.status_ok && target.slots_ok;
+    if (!target.reported) {
+      const std::string reason = !target.status_ok ? target.status_reason : target.slots_reason;
+      if (ok) {
+        const uint8_t expected_slots = countEnabledSnapshotSlotsForVerify(target.expected_snapshot);
+        const uint8_t expected_groups = countEnabledSnapshotGroupsForVerify(target.expected_snapshot);
+        writef("[MASTER][TOPO][VERIFY] PASS target=%s ver=%lu slots=%u groups=%u",
+               macToPrintable(target.target).c_str(),
+               static_cast<unsigned long>(target.expected_snapshot.topology_version),
+               static_cast<unsigned int>(expected_slots),
+               static_cast<unsigned int>(expected_groups));
+      } else {
+        writef("[MASTER][TOPO][VERIFY] FAIL target=%s reason=%s",
+               macToPrintable(target.target).c_str(),
+               reason.empty() ? "unknown" : reason.c_str());
+      }
+      target.reported = true;
+    }
+    if (ok) {
+      ++passed;
+    } else {
+      ++failed;
+    }
+  }
+
+  if (pending > 0U) {
+    return;
+  }
+  const uint32_t elapsed_ms = nowMs() - topology_verify_.started_ms;
+  writef("[MASTER][TOPO][VERIFY] summary path=%s topo_ver=%lu targets=%u pass=%u fail=%u elapsed_ms=%lu",
+         topology_verify_.source_path.empty() ? "/o/s/tp.json" : topology_verify_.source_path.c_str(),
+         static_cast<unsigned long>(topology_verify_.topology_version),
+         static_cast<unsigned int>(topology_verify_.targets.size()),
+         static_cast<unsigned int>(passed),
+         static_cast<unsigned int>(failed),
+         static_cast<unsigned long>(elapsed_ms));
+  clearTopologyVerifySession_();
+}
+
+void MasterCli::checkTopologyVerifyTimeout_(uint32_t now_ms) {
+  if (!topology_verify_.active) {
+    return;
+  }
+  if (static_cast<int32_t>(now_ms - topology_verify_.deadline_ms) < 0) {
+    return;
+  }
+  topology_verify_.requests.clear();
+  for (auto& target : topology_verify_.targets) {
+    if (!target.status_done) {
+      target.status_done = true;
+      target.status_ok = false;
+      target.status_reason = "status_timeout";
+    }
+    if (!target.slots_done) {
+      target.slots_done = true;
+      target.slots_ok = false;
+      target.slots_reason = "slots_timeout";
+    }
+  }
+  maybeFinalizeTopologyVerifySession_();
+}
+
+void MasterCli::handleTopologyVerifyResponse_(const ManagementResponse& resp) {
+  if (!topology_verify_.active) {
+    return;
+  }
+  const auto req_it = topology_verify_.requests.find(resp.req_id);
+  if (req_it == topology_verify_.requests.end()) {
+    return;
+  }
+  if ((resp.status == ManagementStatus::OkDeferred || resp.status == ManagementStatus::Ok) &&
+      resp.payload.empty()) {
+    return;
+  }
+  const TopologyVerifyRequestState req_state = req_it->second;
+  if (req_state.target_index >= topology_verify_.targets.size()) {
+    topology_verify_.requests.erase(req_it);
+    maybeFinalizeTopologyVerifySession_();
+    return;
+  }
+  TopologyVerifyTargetState& target = topology_verify_.targets[req_state.target_index];
+
+  auto finalize_status_fail = [&](const std::string& reason) {
+    target.status_done = true;
+    target.status_ok = false;
+    target.status_reason = reason;
+    topology_verify_.requests.erase(resp.req_id);
+    maybeFinalizeTopologyVerifySession_();
+  };
+  auto finalize_slots_fail = [&](const std::string& reason) {
+    target.slots_done = true;
+    target.slots_ok = false;
+    target.slots_reason = reason;
+    topology_verify_.requests.erase(resp.req_id);
+    maybeFinalizeTopologyVerifySession_();
+  };
+
+  if (req_state.kind == TopologyVerifyReqKind::Status) {
+    if (resp.status != ManagementStatus::Ok && resp.status != ManagementStatus::OkDeferred) {
+      finalize_status_fail(std::string("status_") + management_utils::managementStatusToString(resp.status));
+      return;
+    }
+
+    ManagementTopologyStatusPayload topo{};
+    bool parsed = false;
+    bool committed_state_known = false;
+    bool committed_groups_known = false;
+    bool index_window_known = false;
+    bool committed_checksum_known = false;
+
+    if (management_utils::parseTopologyStatusPayload(resp.payload, topo)) {
+      parsed = true;
+      committed_state_known = true;
+      committed_groups_known = true;
+      index_window_known = true;
+      committed_checksum_known = true;
+    } else if (!resp.payload.empty()) {
+      DescriptorResponse desc{};
+      if (manager_.decodeDescriptorResponsePayload(resp.payload.data(), resp.payload.size(), desc)) {
+        if (desc.type == DescriptorResponseType::Error) {
+          finalize_status_fail(desc.message.empty() ? "descriptor_error" : desc.message);
+          return;
+        }
+        if (desc.type == DescriptorResponseType::Ack) {
+          ParsedTopologyStatusForVerify parsed_status{};
+          if (parseTopologyStatusAckMessageForVerify(desc.message, parsed_status)) {
+            topo = parsed_status.status;
+            parsed = true;
+            committed_state_known = parsed_status.committed_state_known;
+            committed_groups_known = parsed_status.committed_groups_known;
+            index_window_known = parsed_status.index_window_known;
+            committed_checksum_known = parsed_status.committed_checksum_known;
+          }
+        }
+      }
+    }
+    if (!parsed) {
+      finalize_status_fail("status_payload_parse_failed");
+      return;
+    }
+
+    const uint8_t expected_slots = countEnabledSnapshotSlotsForVerify(target.expected_snapshot);
+    const uint8_t expected_groups = countEnabledSnapshotGroupsForVerify(target.expected_snapshot);
+    const uint32_t expected_checksum = computeSnapshotChecksumForVerify(target.expected_snapshot);
+    std::string mismatch_reason{};
+    if (!topo.has_committed) {
+      mismatch_reason = "committed_missing";
+    } else if (committed_state_known && topo.committed_state != 2U) {
+      mismatch_reason = "committed_state_not_committed";
+    } else if (topo.committed_version != target.expected_snapshot.topology_version) {
+      mismatch_reason = "committed_version_mismatch expected=" +
+                        std::to_string(static_cast<unsigned long>(target.expected_snapshot.topology_version)) +
+                        " actual=" + std::to_string(static_cast<unsigned long>(topo.committed_version));
+    } else if (topo.committed_slot_count != expected_slots) {
+      mismatch_reason = "committed_slots_mismatch expected=" +
+                        std::to_string(static_cast<unsigned int>(expected_slots)) +
+                        " actual=" + std::to_string(static_cast<unsigned int>(topo.committed_slot_count));
+    } else if (committed_groups_known && topo.committed_group_count != expected_groups) {
+      mismatch_reason = "committed_groups_mismatch expected=" +
+                        std::to_string(static_cast<unsigned int>(expected_groups)) +
+                        " actual=" + std::to_string(static_cast<unsigned int>(topo.committed_group_count));
+    } else if (index_window_known &&
+               (topo.index_neg != target.expected_snapshot.index_neg ||
+                topo.index_pos != target.expected_snapshot.index_pos)) {
+      mismatch_reason = "index_window_mismatch expected=(" +
+                        std::to_string(static_cast<unsigned int>(target.expected_snapshot.index_neg)) +
+                        "," + std::to_string(static_cast<unsigned int>(target.expected_snapshot.index_pos)) +
+                        ") actual=(" + std::to_string(static_cast<unsigned int>(topo.index_neg)) +
+                        "," + std::to_string(static_cast<unsigned int>(topo.index_pos)) + ")";
+    } else if (committed_checksum_known && topo.committed_checksum != expected_checksum) {
+      mismatch_reason = "committed_checksum_mismatch expected=0x" +
+                        formatHex32ForVerify(expected_checksum) +
+                        " actual=0x" + formatHex32ForVerify(topo.committed_checksum);
+    }
+
+    target.status_done = true;
+    target.status_ok = mismatch_reason.empty();
+    target.status_reason = mismatch_reason;
+    topology_verify_.requests.erase(resp.req_id);
+    maybeFinalizeTopologyVerifySession_();
+    return;
+  }
+
+  if (req_state.kind == TopologyVerifyReqKind::SlotsCommitted) {
+    if (resp.status != ManagementStatus::Ok && resp.status != ManagementStatus::OkDeferred) {
+      finalize_slots_fail(std::string("slots_") + management_utils::managementStatusToString(resp.status));
+      return;
+    }
+    uint8_t state = 0U;
+    std::vector<ManagementTopologySlotPayload> slots{};
+    if (!management_utils::parseTopologySlotsPayload(resp.payload, state, slots)) {
+      finalize_slots_fail("slots_payload_parse_failed");
+      return;
+    }
+    if (state != 2U) {
+      finalize_slots_fail("slots_state_not_committed");
+      return;
+    }
+    std::string compare_reason{};
+    if (!compareTopologySlotsForVerify_(target.expected_snapshot, slots, compare_reason)) {
+      finalize_slots_fail(compare_reason);
+      return;
+    }
+    target.slots_done = true;
+    target.slots_ok = true;
+    target.slots_reason.clear();
+    topology_verify_.requests.erase(resp.req_id);
+    maybeFinalizeTopologyVerifySession_();
+  }
+}
+
 void MasterCli::printQueueStatus() const {
   const char* policy = "legacy";
   const CliTrafficPolicy effective = effectiveTrafficPolicy();
@@ -7830,6 +9608,12 @@ MasterCli::CommandDispatchResult MasterCli::handleLineEx(const std::string& raw)
         lower_cmd == "cli status" ||
         lower_cmd == "cli on" ||
         lower_cmd == "cli off" ||
+        lower_cmd == "cli.baud" ||
+        lower_cmd == "cli.baud.get" ||
+        startsWith(lower_cmd, "cli.baud set ") ||
+        lower_cmd == "cli.speed" ||
+        lower_cmd == "cli.speed.get" ||
+        startsWith(lower_cmd, "cli.speed set ") ||
         lower_cmd == "metrics" ||
         lower_cmd == "metrics.reset" ||
         lower_cmd == "active" ||
@@ -7973,6 +9757,7 @@ MasterCli::CommandDispatchResult MasterCli::handleLineEx(const std::string& raw)
 
 void MasterCli::tick(uint32_t now_ms) {
   pumpManagementMailbox();
+  checkTopologyVerifyTimeout_(now_ms);
   if (!cli_enabled_) {
     return;
   }

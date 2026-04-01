@@ -85,6 +85,9 @@ bool EspNowManager::dispatchRxByType(const MacAddress& from,
     case MessageType::TopologyTrigger:
       return enqueue_control_rx(MessageType::TopologyTrigger);
 
+    case MessageType::TopologyTriggerBatch:
+      return enqueue_control_rx(MessageType::TopologyTriggerBatch);
+
     case MessageType::TopologyTriggerAck:
       return enqueue_control_rx(MessageType::TopologyTriggerAck);
 
@@ -135,7 +138,7 @@ bool EspNowManager::onRxDiscovery(const MacAddress& from,
     // Explicitly drop discovery frames unless the management discovery window is active.
     return true;
   }
-  if (config_.local_role == Role::Master && persistedPairCount() >= 14U) {
+  if (config_.local_role == Role::Master && persistedPairCount() >= 15U) {
     return true;
   }
   touchDiscovery(from);

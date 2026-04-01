@@ -76,6 +76,17 @@ Resolved setting value for UI/control should be interpreted as:
 
 `ManagementFrontendAdapter` exposes resolved helpers for this behavior.
 
+## Cache-First Settings Read Policy (Target)
+
+Settings overlay/read flows should use cache-first policy:
+
+1. read cached resolved settings first
+2. only force transport pull on explicit refresh
+3. expose cache readiness metadata so callers can distinguish:
+   - empty/partial cache
+   - ready/full cache
+   - stale cache requiring refresh
+
 ## Recommended Write Convergence
 
 For strict state convergence:
@@ -84,6 +95,16 @@ For strict state convergence:
 2. wait for terminal response/event state
 3. read back with `SettingGet` or `SettingsGet`
 4. accept only if readback matches expected value
+
+## Delta Write Policy (Target)
+
+For API/frontends, settings writes should be changed-only:
+
+1. compute payload delta against baseline cached values
+2. send only changed keys
+3. keep library-side unchanged-key skip as safety guard
+
+This reduces pending time and avoids redundant set operations.
 
 ## Profile Alignment
 

@@ -10,6 +10,10 @@ namespace espnow_link {
 
 namespace {
 
+#ifndef ESPNOW_LINK_LOG_FRAMES
+#define ESPNOW_LINK_LOG_FRAMES 0
+#endif
+
 const char* toTypeName(MessageType t) {
   switch (t) {
     case MessageType::Discovery:
@@ -48,6 +52,12 @@ const char* toTypeName(MessageType t) {
       return "EVENT";
     case MessageType::FirmwareStatus:
       return "FW_STATUS";
+    case MessageType::TopologyTrigger:
+      return "TOPO_TRIG";
+    case MessageType::TopologyTriggerAck:
+      return "TOPO_ACK";
+    case MessageType::TopologyTriggerBatch:
+      return "TOPO_BATCH";
     default:
       return "ERR";
   }
@@ -63,6 +73,7 @@ void DebugHooks::onRxFrame(const MacAddress& from,
                            uint32_t corr_id,
                            size_t len,
                            int rssi) {
+#if ESPNOW_LINK_LOG_FRAMES
 #if defined(ESP_PLATFORM)
   ESP_LOGI(tag_, "[RX] from=%02X:%02X:%02X:%02X:%02X:%02X type=%s corr=%lu len=%u rssi=%d",
            from[0],
@@ -89,6 +100,13 @@ void DebugHooks::onRxFrame(const MacAddress& from,
               static_cast<unsigned int>(len),
               rssi);
 #endif
+#else
+  (void)from;
+  (void)type;
+  (void)corr_id;
+  (void)len;
+  (void)rssi;
+#endif
 }
 
 void DebugHooks::onTxFrame(const MacAddress& to,
@@ -96,6 +114,7 @@ void DebugHooks::onTxFrame(const MacAddress& to,
                            uint32_t corr_id,
                            size_t len,
                            bool ok) {
+#if ESPNOW_LINK_LOG_FRAMES
 #if defined(ESP_PLATFORM)
   ESP_LOGI(tag_, "[TX] to=%02X:%02X:%02X:%02X:%02X:%02X type=%s corr=%lu len=%u status=%s",
            to[0],
@@ -121,6 +140,13 @@ void DebugHooks::onTxFrame(const MacAddress& to,
               static_cast<unsigned long>(corr_id),
               static_cast<unsigned int>(len),
               ok ? "OK" : "FAIL");
+#endif
+#else
+  (void)to;
+  (void)type;
+  (void)corr_id;
+  (void)len;
+  (void)ok;
 #endif
 }
 

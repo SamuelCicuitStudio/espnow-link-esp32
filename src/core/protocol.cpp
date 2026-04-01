@@ -24,6 +24,13 @@ enum class WireService : uint8_t {
   Discovery = 0x09,
 };
 
+constexpr uint8_t kControlOpPullRequest = 0x01;
+constexpr uint8_t kControlOpPullResponse = 0x02;
+constexpr uint8_t kControlOpEventReport = 0x10;
+constexpr uint8_t kControlOpTopologyTrigger = 0x11;
+constexpr uint8_t kControlOpTopologyTriggerAck = 0x12;
+constexpr uint8_t kControlOpTopologyTriggerBatch = 0x13;
+
 bool toWire(MessageType in, WireMsgType& msg, WireService& service, uint8_t& op) {
   switch (in) {
     case MessageType::Discovery:
@@ -104,17 +111,32 @@ bool toWire(MessageType in, WireMsgType& msg, WireService& service, uint8_t& op)
     case MessageType::PullRequest:
       msg = WireMsgType::Request;
       service = WireService::Control;
-      op = 0x01;
+      op = kControlOpPullRequest;
       return true;
     case MessageType::PullResponse:
       msg = WireMsgType::ResponseOk;
       service = WireService::Control;
-      op = 0x02;
+      op = kControlOpPullResponse;
       return true;
     case MessageType::EventReport:
       msg = WireMsgType::Event;
       service = WireService::Control;
-      op = 0x10;
+      op = kControlOpEventReport;
+      return true;
+    case MessageType::TopologyTrigger:
+      msg = WireMsgType::Event;
+      service = WireService::Control;
+      op = kControlOpTopologyTrigger;
+      return true;
+    case MessageType::TopologyTriggerAck:
+      msg = WireMsgType::AckOnly;
+      service = WireService::Control;
+      op = kControlOpTopologyTriggerAck;
+      return true;
+    case MessageType::TopologyTriggerBatch:
+      msg = WireMsgType::Event;
+      service = WireService::Control;
+      op = kControlOpTopologyTriggerBatch;
       return true;
     default:
       break;
@@ -199,6 +221,25 @@ bool fromWire(WireMsgType msg, WireService service, uint8_t op, MessageType& out
     }
   }
 
+  if (service == WireService::Control) {
+    if (msg == WireMsgType::Event && op == kControlOpEventReport) {
+      out = MessageType::EventReport;
+      return true;
+    }
+    if (msg == WireMsgType::Event && op == kControlOpTopologyTrigger) {
+      out = MessageType::TopologyTrigger;
+      return true;
+    }
+    if (msg == WireMsgType::Event && op == kControlOpTopologyTriggerBatch) {
+      out = MessageType::TopologyTriggerBatch;
+      return true;
+    }
+    if (msg == WireMsgType::AckOnly && op == kControlOpTopologyTriggerAck) {
+      out = MessageType::TopologyTriggerAck;
+      return true;
+    }
+  }
+
   if (service == WireService::Descriptor ||
       service == WireService::Settings ||
       service == WireService::Telemetry ||
@@ -212,10 +253,6 @@ bool fromWire(WireMsgType msg, WireService service, uint8_t op, MessageType& out
     if ((msg == WireMsgType::ResponseOk || msg == WireMsgType::ResponseErr) &&
         (op == 0x02 || op == 0x04 || op == 0x06)) {
       out = MessageType::PullResponse;
-      return true;
-    }
-    if (msg == WireMsgType::Event && service == WireService::Control && op == 0x10) {
-      out = MessageType::EventReport;
       return true;
     }
   }

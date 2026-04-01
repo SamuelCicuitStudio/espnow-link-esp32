@@ -92,6 +92,7 @@ class PmsAppDescriptorProvider : public espnow_link::IDescriptorProvider, public
   bool applyOtaImage(const std::string& target, std::string& out_message) override;
 
  private:
+  uint32_t loadU32_(const char* key, uint32_t fallback) const;
   uint16_t loadU16_(const char* key, uint16_t fallback) const;
   bool loadBool_(const char* key, bool fallback) const;
   float loadFloat_(const char* key, float fallback) const;

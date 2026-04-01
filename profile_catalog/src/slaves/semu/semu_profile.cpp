@@ -89,15 +89,15 @@ constexpr ChildSettingDef kChildSettingDefs[] = {
     {"next_mac", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_NEXT, "00:00:00:00:00:00", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"pos_relays", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_POSR, "[]", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {"neg_relays", espnow_link::SettingValueType::String, PCAT_SEMU_CKEY_NEGR, "[]", "type=str;rw=1;child=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
-    {"detect_fall_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFNR, "200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFNR_MIN, PCAT_SENS_SET_TFNR_MAX, false, 0.0f, 0.0f, nullptr},
-    {"detect_release_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFFR, "3200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFFR_MIN, PCAT_SENS_SET_TFFR_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_fall_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFNR, "35", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFNR_MIN, PCAT_SENS_SET_TFNR_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_release_delta_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_TFFR, "15", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_TFFR_MIN, PCAT_SENS_SET_TFFR_MAX, false, 0.0f, 0.0f, nullptr},
     {"ab_spacing_cm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ABSP, "5", "type=u32;rw=1;min=0;max=6553;child=1", true, PCAT_SENS_SET_ABSP_CM_MIN, PCAT_SENS_SET_ABSP_CM_MAX, false, 0.0f, 0.0f, nullptr},
     {"tfl_a_calib_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CALA, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SEMU_SET_CALA_MIN, PCAT_SEMU_SET_CALA_MAX, false, 0.0f, 0.0f, nullptr},
     {"tfl_b_calib_mm", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CALB, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SEMU_SET_CALB_MIN, PCAT_SEMU_SET_CALB_MAX, false, 0.0f, 0.0f, nullptr},
     {"als_t0_lux", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ALS0, "180", "type=u32;rw=1;min=1;max=65535;child=1", true, PCAT_SENS_SET_ALS0_MIN, PCAT_SENS_SET_ALS0_MAX, false, 0.0f, 0.0f, nullptr},
     {"als_t1_lux", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ALS1, "300", "type=u32;rw=1;min=1;max=65535;child=1", true, PCAT_SENS_SET_ALS1_MIN, PCAT_SENS_SET_ALS1_MAX, false, 0.0f, 0.0f, nullptr},
-    {"detect_window_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CFMS, "140", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_CFM_MIN, PCAT_SENS_SET_CFM_MAX, false, 0.0f, 0.0f, nullptr},
-    {"detect_clear_hold_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_STMS, "1200", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_STP_MIN, PCAT_SENS_SET_STP_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_window_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_CFMS, "2500", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_CFM_MIN, PCAT_SENS_SET_CFM_MAX, false, 0.0f, 0.0f, nullptr},
+    {"detect_clear_hold_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_STMS, "50", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_STP_MIN, PCAT_SENS_SET_STP_MAX, false, 0.0f, 0.0f, nullptr},
     {"relay_on_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_RONM, "600", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_RON_MIN, PCAT_SENS_SET_RON_MAX, false, 0.0f, 0.0f, nullptr},
     {"relay_off_ms", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_ROFM, "0", "type=u32;rw=1;min=0;max=65535;child=1", true, PCAT_SENS_SET_ROF_MIN, PCAT_SENS_SET_ROF_MAX, false, 0.0f, 0.0f, nullptr},
     {"lead_count", espnow_link::SettingValueType::Int, PCAT_SEMU_CKEY_LCNT, "3", "type=u32;rw=1;min=0;max=255;child=1", true, PCAT_SENS_SET_LCNT_MIN, PCAT_SENS_SET_LCNT_MAX, false, 0.0f, 0.0f, nullptr},
@@ -178,6 +178,7 @@ constexpr SettingDef kSettingDefs[] = {
     {0x0301, PCAT_SEMU_SET_LOOPA, espnow_link::SettingValueType::Bool, PCAT_SEMU_KEY_LOOPA, "0", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x030A, PCAT_SEMU_SET_FANMD, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_FANMD, "0", "type=u32;rw=1;min=0;max=3;enum=0:auto|1:eco|2:forced|3:stopped", true, PCAT_SEMU_SET_FANMD_MIN, PCAT_SEMU_SET_FANMD_MAX, false, 0.0f, 0.0f, nullptr},
     {0x0308, PCAT_SEMU_SET_BUZEN, espnow_link::SettingValueType::Bool, PCAT_SEMU_KEY_BUZEN, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
+    {0x030C, PCAT_SEMU_SET_CLIBD, espnow_link::SettingValueType::Int, PCAT_SEMU_KEY_CLIBD, "115200", "type=u32;rw=1;enum=9600|19200|38400|57600|74880|115200|230400|250000|460800|921600", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0309, PCAT_SEMU_SET_LEDFB, espnow_link::SettingValueType::Bool, PCAT_SEMU_KEY_LEDFB, "1", "type=bool;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0310, PCAT_SEMU_SET_RGBIDL, espnow_link::SettingValueType::String, PCAT_SEMU_KEY_RGBIDL, PCAT_SEMU_SET_RGBIDL_DEF, "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
     {0x0311, PCAT_SEMU_SET_RGBALT, espnow_link::SettingValueType::String, PCAT_SEMU_KEY_RGBALT, PCAT_SEMU_SET_RGBALT_DEF, "type=str;rw=1", false, 0U, 0U, false, 0.0f, 0.0f, nullptr},
@@ -224,6 +225,17 @@ bool parseU32(const std::string& value, uint32_t& out) {
   }
   out = static_cast<uint32_t>(parsed);
   return true;
+}
+
+bool isSupportedCliBaud(const uint32_t baud) {
+  static constexpr uint32_t kSupported[] = {
+      9600U, 19200U, 38400U, 57600U, 74880U, 115200U, 230400U, 250000U, 460800U, 921600U};
+  for (const uint32_t candidate : kSupported) {
+    if (baud == candidate) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool parseFloat(const std::string& value, float& out) {
@@ -568,6 +580,20 @@ bool SemuAppDescriptorProvider::getSettingById(uint16_t setting_id, espnow_link:
 }
 
 bool SemuAppDescriptorProvider::setSetting(const std::string& key, const std::string& value, std::string& out_message) {
+  if (key == PCAT_SEMU_SET_CLIBD) {
+    uint32_t baud = 0U;
+    if (!parseU32(value, baud) || !isSupportedCliBaud(baud)) {
+      out_message = "cli_baud expects one of: 9600|19200|38400|57600|74880|115200|230400|250000|460800|921600";
+      return false;
+    }
+    const bool ok = nvs_.putU32(PCAT_SEMU_KEY_CLIBD, baud);
+    out_message = ok ? "cli_baud updated (restart required)" : "cli_baud persist failed";
+    if (cfg_.setting_feedback != nullptr) {
+      cfg_.setting_feedback(cfg_.runtime_user, key, value, ok);
+    }
+    return ok;
+  }
+
   const SettingDef* def = nullptr;
   for (const auto& s : kSettingDefs) {
     if (key == s.key) {

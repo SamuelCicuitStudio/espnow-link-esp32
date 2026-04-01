@@ -111,6 +111,7 @@
 #define PCAT_ICM_KEY_CAPTEN "ICCAPT"        // Captive portal enable.
 #define PCAT_ICM_KEY_BTXDBM "ICBTPW"        // BLE TX dBm.
 #define PCAT_ICM_KEY_BADVMS "ICBADV"        // BLE adv interval ms.
+#define PCAT_ICM_KEY_CLIBD "ICBAUD"         // ICM CLI/USB serial baud (applied at boot).
 // ICM frontend orchestration persisted defaults.
 #define PCAT_ICM_KEY_OWAIT "ICOWTM"         // Frontend orchestration wait timeout ms.
 #define PCAT_ICM_KEY_OEVRG "ICOERC"         // Frontend event ring capacity.
@@ -210,6 +211,7 @@
 #define PCAT_ICM_SET_CAPTEN "captive_enable"
 #define PCAT_ICM_SET_BTXDBM "ble_tx_dbm"
 #define PCAT_ICM_SET_BADVMS "ble_adv_ms"
+#define PCAT_ICM_SET_CLIBD "cli_baud"
 // ICM frontend orchestration setting keys.
 #define PCAT_ICM_SET_OWAIT "orch_wait_ms"
 #define PCAT_ICM_SET_OEVRG "orch_event_ring"
@@ -221,9 +223,9 @@
 #define PCAT_ICM_SET_DNAME_MIN_LEN 1              // Minimum allowed master-name length.
 #define PCAT_ICM_SET_DNAME_MAX_LEN 31             // Maximum allowed master-name length.
 
-#define PCAT_ICM_SET_MXPRS_DEF 14U                // Default hard max-pairs value.
+#define PCAT_ICM_SET_MXPRS_DEF 15U                // Default hard max-pairs value.
 #define PCAT_ICM_SET_MXPRS_MIN 1U                 // Minimum hard max-pairs value.
-#define PCAT_ICM_SET_MXPRS_MAX 14U                // Maximum hard max-pairs value (current policy).
+#define PCAT_ICM_SET_MXPRS_MAX 15U                // Maximum hard max-pairs value (current policy).
 
 #define PCAT_ICM_SET_LIVEN_DEF 1                  // Default liveness monitor enabled.
 #define PCAT_ICM_SET_DISCA_DEF 0                  // Default discovery_auto disabled.
@@ -236,6 +238,9 @@
 #define PCAT_ICM_SET_FANMD_MAX 3U                 // Maximum fan mode value.
 #define PCAT_ICM_SET_BUZEN_DEF 1                  // Default buzzer enabled.
 #define PCAT_ICM_SET_LEDFB_DEF 1                  // Default LED feedback enabled.
+#define PCAT_ICM_SET_CLIBD_DEF 115200U            // Default ICM CLI baud rate.
+#define PCAT_ICM_SET_CLIBD_MIN 9600U              // Minimum allowed persisted ICM CLI baud.
+#define PCAT_ICM_SET_CLIBD_MAX 921600U            // Maximum allowed persisted ICM CLI baud.
 
 // ICM schema telemetry keys.
 #define PCAT_ICM_MET_PCNT "paired_count"          // Telemetry key: total paired slave count.
@@ -248,13 +253,13 @@
 
 // ICM telemetry ranges.
 #define PCAT_ICM_MET_PCNT_MIN 0U                  // Minimum paired_count telemetry value.
-#define PCAT_ICM_MET_PCNT_MAX 14U                 // Maximum paired_count telemetry value.
+#define PCAT_ICM_MET_PCNT_MAX 15U                 // Maximum paired_count telemetry value.
 
 #define PCAT_ICM_MET_OCNT_MIN 0U                  // Minimum online_count telemetry value.
-#define PCAT_ICM_MET_OCNT_MAX 14U                 // Maximum online_count telemetry value.
+#define PCAT_ICM_MET_OCNT_MAX 15U                 // Maximum online_count telemetry value.
 
 #define PCAT_ICM_MET_OFFCNT_MIN 0U                // Minimum offline_count telemetry value.
-#define PCAT_ICM_MET_OFFCNT_MAX 14U               // Maximum offline_count telemetry value.
+#define PCAT_ICM_MET_OFFCNT_MAX 15U               // Maximum offline_count telemetry value.
 
 #define PCAT_ICM_MET_QDEP_MIN 0U                  // Minimum queue_depth telemetry value.
 #define PCAT_ICM_MET_QDEP_MAX 512U                // Maximum queue_depth telemetry value.
@@ -269,7 +274,7 @@
 
 // ICM descriptor text snippets derived from ranges.
 #define PCAT_ICM_DESC_SET_DNAME "type=str;rw=1;min=1;max=31"                   // Descriptor metadata for device_name.
-#define PCAT_ICM_DESC_SET_MXPRS "type=u16;rw=1;min=1;max=14"                   // Descriptor metadata for max_pairs.
+#define PCAT_ICM_DESC_SET_MXPRS "type=u16;rw=1;min=1;max=15"                   // Descriptor metadata for max_pairs.
 #define PCAT_ICM_DESC_SET_LIVEN "type=bool;rw=1;min=0;max=1"                   // Descriptor metadata for live_enabled.
 #define PCAT_ICM_DESC_SET_DISCA "type=bool;rw=1;min=0;max=1"                   // Descriptor metadata for discovery_auto.
 #define PCAT_ICM_DESC_SET_QBUDG "type=u16;rw=1;min=16;max=512"                 // Descriptor metadata for queue_budget.
@@ -277,9 +282,9 @@
 #define PCAT_ICM_DESC_SET_BUZEN "type=bool;rw=1;min=0;max=1"                   // Descriptor metadata for buzzer_enable.
 #define PCAT_ICM_DESC_SET_LEDFB "type=bool;rw=1;min=0;max=1"                   // Descriptor metadata for led_feedback_enable.
 
-#define PCAT_ICM_DESC_MET_PCNT "type=u16;unit=count;min=0;max=14;pull=1;push=1"    // Descriptor metadata for paired_count.
-#define PCAT_ICM_DESC_MET_OCNT "type=u16;unit=count;min=0;max=14;pull=1;push=1"    // Descriptor metadata for online_count.
-#define PCAT_ICM_DESC_MET_OFFCNT "type=u16;unit=count;min=0;max=14;pull=1;push=1"  // Descriptor metadata for offline_count.
+#define PCAT_ICM_DESC_MET_PCNT "type=u16;unit=count;min=0;max=15;pull=1;push=1"    // Descriptor metadata for paired_count.
+#define PCAT_ICM_DESC_MET_OCNT "type=u16;unit=count;min=0;max=15;pull=1;push=1"    // Descriptor metadata for online_count.
+#define PCAT_ICM_DESC_MET_OFFCNT "type=u16;unit=count;min=0;max=15;pull=1;push=1"  // Descriptor metadata for offline_count.
 #define PCAT_ICM_DESC_MET_QDEP "type=u16;unit=count;min=0;max=512;pull=1;push=1"   // Descriptor metadata for queue_depth.
 #define PCAT_ICM_DESC_MET_QDRP "type=u16;unit=count;min=0;max=65535;pull=1;push=1" // Descriptor metadata for queue_drop.
 #define PCAT_ICM_DESC_MET_LIVEN "type=bool;unit=bool;min=0;max=1;pull=1;push=1"    // Descriptor metadata for live_enabled.

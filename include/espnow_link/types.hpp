@@ -35,6 +35,7 @@ enum class MessageType : uint8_t {
   FirmwareStatus = 0x7B,
   TopologyTrigger = 0x7C,
   TopologyTriggerAck = 0x7D,
+  TopologyTriggerBatch = 0x7E,
   Error = 0x7F,
 };
 

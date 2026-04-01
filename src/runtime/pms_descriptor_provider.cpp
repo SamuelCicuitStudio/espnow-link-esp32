@@ -65,7 +65,7 @@ bool PmsDescriptorProvider::getCapabilities(std::vector<CapabilityDescriptor>& o
   out.push_back({"liveness_pull", "On-demand liveness heartbeat"});
   out.push_back({"autopull_hint", "Provides suggested liveness interval"});
   out.push_back({"time_sync", "Slave RTC get/set over descriptor RPC"});
-  out.push_back({"reset", "NVS reset key plus deep sleep reboot"});
+  out.push_back({"reset", "NVS reset key plus reboot"});
   return true;
 }
 

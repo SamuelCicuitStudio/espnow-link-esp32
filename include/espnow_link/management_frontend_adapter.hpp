@@ -61,11 +61,63 @@ namespace espnow_link {
  */
 class ManagementFrontendAdapter {
  public:
+  /** @brief Origin tag for settings refresh/cache hydration actions. */
+  enum class SettingsRefreshOrigin : uint8_t {
+    Unknown = 0,
+    PairBootstrap = 1,
+    StartupReconcile = 2,
+    ManualRefresh = 3,
+    PostWriteSync = 4,
+  };
+
+  /** @brief Settings cache completeness state for one peer. */
+  enum class SettingsCacheCompleteness : uint8_t {
+    Empty = 0,
+    Partial = 1,
+    Full = 2,
+  };
+
+  /** @brief Metadata for cache-backed settings reads/refreshes. */
+  struct SettingsCacheMeta {
+    bool cache_hit = false;
+    SettingsCacheCompleteness completeness = SettingsCacheCompleteness::Empty;
+    bool ready_for_ui = false;
+    bool refresh_inflight = false;
+    SettingsRefreshOrigin last_refresh_origin = SettingsRefreshOrigin::Unknown;
+    uint32_t settings_seq = 0U;
+    uint64_t cache_updated_ms = 0U;
+    uint64_t cache_age_ms = 0U;
+    bool refresh_performed = false;
+    ManagementStatus refresh_status = ManagementStatus::Ok;
+    bool has_error = false;
+    std::string error_message{};
+  };
+
   /** @brief Queue depth snapshot. */
   struct QueueDepth {
     size_t requests = 0;
     size_t responses = 0;
     size_t events = 0;
+  };
+
+  /** @brief Aggregate frontend workload/busy snapshot for API backpressure gating. */
+  struct BusySnapshot {
+    bool busy = false;
+    bool transport_backlog = false;
+    bool command_inflight = false;
+    bool settings_refresh_inflight = false;
+    size_t inflight_commands = 0;
+    size_t settings_refresh_nodes = 0;
+    QueueDepth queue{};
+    uint64_t updated_ms = 0U;
+  };
+
+  /** @brief Runtime pump diagnostics for single-owner hardening. */
+  struct RuntimePumpStats {
+    bool wait_loops_tick_runtime = true;
+    uint32_t runtime_tick_calls = 0U;
+    uint32_t wait_runtime_tick_calls = 0U;
+    uint32_t wait_runtime_tick_skips = 0U;
   };
 
   /** @brief Last-known per-node cached view for frontend rendering. */
@@ -79,6 +131,16 @@ class ManagementFrontendAdapter {
     TimeStatus time{};
     bool has_settings = false;
     std::vector<SettingDescriptor> settings{};
+    uint32_t settings_seq = 0U;
+    uint64_t settings_updated_ms = 0U;
+    SettingsCacheCompleteness settings_completeness = SettingsCacheCompleteness::Empty;
+    ManagementStatus settings_last_status = ManagementStatus::Ok;
+    std::string settings_last_error{};
+    bool settings_refresh_inflight = false;
+    uint32_t settings_refresh_req_id = 0U;
+    uint64_t settings_refresh_started_ms = 0U;
+    uint64_t settings_refresh_last_attempt_ms = 0U;
+    SettingsRefreshOrigin settings_last_refresh_origin = SettingsRefreshOrigin::Unknown;
     bool has_telemetry = false;
     std::vector<TelemetrySample> telemetry_samples{};
     uint32_t update_seq = 0;
@@ -88,6 +150,8 @@ class ManagementFrontendAdapter {
   struct CachedSettingView {
     uint16_t setting_id = 0U;
     std::string key{};
+    SettingValueType value_type = SettingValueType::String;
+    bool writable = false;
     std::string current_value{};
     std::string default_value{};
     std::string value{};
@@ -234,6 +298,7 @@ class ManagementFrontendAdapter {
     bool submitted = false;
     bool applied = false;
     bool confirmed = false;
+    bool skipped_unchanged = false;
     ManagementStatus status = ManagementStatus::InternalError;
     bool has_error = false;
     CommandError error{};
@@ -448,10 +513,15 @@ class ManagementFrontendAdapter {
       // Canonical command path: queue transport only.
       transport_->setAccessLevel(access_level);
       controller_.bind(*transport_);
+      if (source_ != ManagementSource::Unknown) {
+        controller_.setSource(source_);
+      } else {
+        source_ = controller_.source();
+      }
     } else {
       controller_.clearBindings();
+      controller_.setSource(source_);
     }
-    controller_.setSource(source_);
     controller_.setAccessLevel(access_level);
     if (service_ != nullptr) {
       ManagementService::RadioTransitionStatus svc_status{};
@@ -488,13 +558,39 @@ class ManagementFrontendAdapter {
     owner_violation_count_ = 0U;
   }
 
+  /**
+   * @brief Control whether blocking wait loops are allowed to tick runtime directly.
+   *
+   * For strict single-owner runtime mode, keep this disabled and drive runtime
+   * only via `tick(...)` from one canonical owner task.
+   */
+  void setWaitLoopsTickRuntime(bool enabled) {
+    wait_loops_tick_runtime_ = enabled;
+  }
+
+  /** @brief Read current wait-loop runtime tick policy. */
+  bool waitLoopsTickRuntime() const { return wait_loops_tick_runtime_; }
+
+  /** @brief Snapshot runtime pump diagnostics counters. */
+  void runtimePumpStatsGet(RuntimePumpStats& out_stats) const {
+    out_stats.wait_loops_tick_runtime = wait_loops_tick_runtime_;
+    out_stats.runtime_tick_calls = runtime_tick_calls_;
+    out_stats.wait_runtime_tick_calls = wait_runtime_tick_calls_;
+    out_stats.wait_runtime_tick_skips = wait_runtime_tick_skips_;
+  }
+
   /** @brief Source identity used for submitted command metadata. */
   ManagementSource source() const { return controller_.source(); }
   /** @brief Set source identity for submitted command metadata. */
   void setSource(ManagementSource source) {
     if (!enforceOwnerContext_()) return;
+    if (source == ManagementSource::Unknown && transport_ != nullptr) {
+      source_ = transport_->source();
+      controller_.setSource(source_);
+      return;
+    }
     source_ = source;
-    controller_.setSource(source);
+    controller_.setSource(source_);
   }
 
   /** @brief Access level used for submitted commands. */
@@ -542,6 +638,17 @@ class ManagementFrontendAdapter {
   bool batchConfirmDefault() const { return batch_confirm_default_; }
   /** @brief Read default batch refresh-cache behavior. */
   bool batchRefreshCacheDefault() const { return batch_refresh_cache_default_; }
+
+  /** @brief Enable/disable one-shot settings cache bootstrap after pair success events. */
+  void setAutoPairSettingsBootstrap(bool enabled, uint32_t timeout_ms = 4500U) {
+    if (!enforceOwnerContext_()) return;
+    auto_pair_settings_bootstrap_enabled_ = enabled;
+    pair_bootstrap_settings_timeout_ms_ = (timeout_ms == 0U) ? 4500U : timeout_ms;
+  }
+  /** @brief Read pair-success settings bootstrap enable flag. */
+  bool autoPairSettingsBootstrapEnabled() const { return auto_pair_settings_bootstrap_enabled_; }
+  /** @brief Read pair-success settings bootstrap timeout. */
+  uint32_t autoPairSettingsBootstrapTimeoutMs() const { return pair_bootstrap_settings_timeout_ms_; }
 
   /**
    * @brief Apply orchestration defaults from resolved settings key/value list.
@@ -665,9 +772,7 @@ class ManagementFrontendAdapter {
     const uint64_t start_ms = monotonicMs_();
     const uint64_t deadline_ms = start_ms + static_cast<uint64_t>(wait_ms == 0U ? 3000U : wait_ms);
     while (monotonicMs_() < deadline_ms) {
-      if (runtime_ != nullptr) {
-        runtime_->tick(static_cast<uint32_t>(monotonicMs_()), 4U, 32U, 64U);
-      }
+      tickRuntimeFromWait_(4U, 32U, 64U);
       (void)drainToCache(32U, 64U);
       CommandStatusView status{};
       if (commandStatusGet(submit_result.req_id, status) && status.terminal) {
@@ -870,9 +975,7 @@ class ManagementFrontendAdapter {
 
     const uint64_t deadline_ms = monotonicMs_() + static_cast<uint64_t>((wait_ms == 0U) ? 3000U : wait_ms);
     while (monotonicMs_() < deadline_ms) {
-      if (runtime_ != nullptr) {
-        runtime_->tick(static_cast<uint32_t>(monotonicMs_()), 4U, 32U, 64U);
-      }
+      tickRuntimeFromWait_(4U, 32U, 64U);
       (void)drainToCache(32U, 64U);
 
       OperationStatus status{};
@@ -1033,9 +1136,7 @@ class ManagementFrontendAdapter {
     }
     const uint64_t deadline_ms = monotonicMs_() + static_cast<uint64_t>(wait_ms);
     while (monotonicMs_() < deadline_ms) {
-      if (runtime_ != nullptr) {
-        runtime_->tick(static_cast<uint32_t>(monotonicMs_()), 4U, 32U, 64U);
-      }
+      tickRuntimeFromWait_(4U, 32U, 64U);
       (void)drainToCache(64U, 128U);
 
       const QueueDepth depth = queueDepth();
@@ -1379,20 +1480,20 @@ class ManagementFrontendAdapter {
     }
 
     if (mask.settings) {
-      out_view.settings_ok = run_targeted(ManagementCommandId::SettingsGet, {}, out_view.settings_run);
-      ok = ok && out_view.settings_ok && out_view.settings_run.has_response;
-      if (out_view.settings_run.has_response) {
-        DescriptorResponse desc{};
-        if (decodeDescriptorResponse(out_view.settings_run.response.payload.data(),
-                                     out_view.settings_run.response.payload.size(),
-                                     desc) &&
-            desc.type == DescriptorResponseType::Settings) {
-          out_view.settings = desc.settings;
+      out_view.settings_ok =
+          run_targeted(ManagementCommandId::NodeBundleGet,
+                       management_utils::buildNodeBundleGetPayload(kNodeBundleMaskSettings),
+                       out_view.settings_run);
+      if (out_view.settings_ok) {
+        (void)drainToCache(32U, 64U);
+        CachedNodeSnapshot node{};
+        if (cachedNode(peer, node) && node.has_settings) {
+          out_view.settings = node.settings;
         } else {
           out_view.settings_ok = false;
-          ok = false;
         }
       }
+      ok = ok && out_view.settings_ok;
     }
 
     if (mask.telemetry_schema) {
@@ -1817,6 +1918,224 @@ class ManagementFrontendAdapter {
   }
 
   /**
+   * @brief Run one targeted NodeBundle pull and merge response(s) into cache.
+   *
+   * This is the API-first bundled fetch path for one peer.
+   * Returns true when command reaches terminal `Done`.
+   */
+  bool nodeBundleGet(const MacAddress& peer,
+                     uint8_t bundle_mask,
+                     CommandRunResult& out_run,
+                     uint32_t timeout_ms = 0) {
+    ManagementController::SubmitOptions submit_options{};
+    submit_options.timeout_ms = timeout_ms;
+    submit_options.has_target_peer = true;
+    submit_options.target_peer = peer;
+    const bool ok =
+        commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::NodeBundleGet),
+                          management_utils::buildNodeBundleGetPayload(bundle_mask),
+                          out_run,
+                          submit_options);
+    if (ok) {
+      (void)drainToCache(64U, 128U);
+    }
+    return ok;
+  }
+
+  /**
+   * @brief Submit targeted settings bundle refresh without blocking.
+   *
+   * Replacement path: `NodeBundleGet(settings)` only.
+   */
+  bool settingsBundleRefresh(const MacAddress& peer,
+                             uint32_t* out_req_id = nullptr,
+                             uint32_t timeout_ms = 0) {
+    return settingsBundleRefreshWithOrigin_(peer,
+                                            SettingsRefreshOrigin::ManualRefresh,
+                                            out_req_id,
+                                            timeout_ms);
+  }
+
+  /**
+   * @brief Fetch one peer settings using bundled API path and return resolved values.
+   *
+   * Equivalent behavior to `settingsGetResolved(...)`, with explicit bundle naming.
+   */
+  bool settingsBundleGet(const MacAddress& peer,
+                         std::vector<CachedSettingView>& out_settings,
+                         uint32_t timeout_ms = 0,
+                         CommandRunResult* out_run = nullptr) {
+    return settingsRefresh(peer, out_settings, timeout_ms, out_run, nullptr);
+  }
+
+  /**
+   * @brief Read cached resolved settings without triggering network pulls.
+   */
+  bool settingsReadCached(const MacAddress& peer,
+                          std::vector<CachedSettingView>& out_settings,
+                          SettingsCacheMeta* out_meta = nullptr) const {
+    out_settings.clear();
+    if (out_meta != nullptr) {
+      *out_meta = SettingsCacheMeta{};
+    }
+    return fillSettingsFromCache_(peer, out_settings, out_meta);
+  }
+
+  /**
+   * @brief Read cache only, but require UI-ready/full settings completeness.
+   */
+  bool settingsReadCachedForUi(const MacAddress& peer,
+                               std::vector<CachedSettingView>& out_settings,
+                               SettingsCacheMeta* out_meta = nullptr) const {
+    out_settings.clear();
+    if (out_meta != nullptr) {
+      *out_meta = SettingsCacheMeta{};
+    }
+    const bool ok = fillSettingsFromCache_(peer, out_settings, out_meta, true);
+    if (out_meta != nullptr) {
+      out_meta->ready_for_ui = ok;
+    }
+    return ok;
+  }
+
+  /**
+   * @brief Force one `NodeBundleGet(settings)` refresh then return cache view.
+   *
+   * If refresh fails but cache exists, returns cached settings and reports error in metadata.
+   */
+  bool settingsRefresh(const MacAddress& peer,
+                       std::vector<CachedSettingView>& out_settings,
+                       uint32_t timeout_ms = 0,
+                       CommandRunResult* out_run = nullptr,
+                       SettingsCacheMeta* out_meta = nullptr) {
+    out_settings.clear();
+    if (out_meta != nullptr) {
+      *out_meta = SettingsCacheMeta{};
+      out_meta->refresh_performed = true;
+      out_meta->last_refresh_origin = SettingsRefreshOrigin::ManualRefresh;
+    }
+
+    CachedNodeSnapshot& refresh_node = ensureCachedNode_(peer);
+    markSettingsRefreshInflight_(refresh_node, SettingsRefreshOrigin::ManualRefresh, 0U);
+
+    const CachedNodeSnapshot* before_node = findCachedNode_(peer);
+    const uint32_t baseline_settings_seq = (before_node != nullptr) ? before_node->settings_seq : 0U;
+
+    ManagementController::SubmitOptions submit_options{};
+    submit_options.timeout_ms = timeout_ms;
+    submit_options.has_target_peer = true;
+    submit_options.target_peer = peer;
+
+    CommandRunResult run{};
+    const bool ok =
+        commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::NodeBundleGet),
+                          management_utils::buildNodeBundleGetPayload(kNodeBundleMaskSettings),
+                          run,
+                          submit_options);
+    if (out_run != nullptr) *out_run = run;
+    if (out_meta != nullptr) {
+      out_meta->refresh_status = run.status;
+    }
+
+    if (!ok) {
+      refresh_node.settings_last_status = run.status;
+      refresh_node.settings_last_error = !run.error.message.empty() ? run.error.message : "settings_refresh_failed";
+    }
+
+    if (ok && hasFreshSettingsCache_(peer, baseline_settings_seq, out_settings)) {
+      SettingsCacheMeta tmp{};
+      (void)fillSettingsFromCache_(peer, out_settings, &tmp);
+      if (out_meta != nullptr) {
+        *out_meta = tmp;
+        out_meta->refresh_performed = true;
+        out_meta->refresh_status = run.status;
+        out_meta->last_refresh_origin = SettingsRefreshOrigin::ManualRefresh;
+      }
+      markSettingsRefreshDone_(refresh_node,
+                               run.status,
+                               run.error.message.empty() ? std::string{} : run.error.message);
+      return true;
+    }
+
+    uint32_t settle_timeout_ms = timeout_ms;
+    if (settle_timeout_ms == 0U) {
+      settle_timeout_ms = controller_.defaultTimeoutMs();
+    }
+    if (settle_timeout_ms == 0U) {
+      settle_timeout_ms = orchestration_wait_default_ms_;
+    }
+    if (settle_timeout_ms == 0U) {
+      settle_timeout_ms = 1000U;
+    }
+    if (settle_timeout_ms > 1500U) {
+      settle_timeout_ms = 1500U;
+    }
+
+    const uint64_t deadline_ms = monotonicMs_() + static_cast<uint64_t>(settle_timeout_ms);
+    while (monotonicMs_() < deadline_ms) {
+      tickRuntimeFromWait_(2U, 16U, 32U);
+      const size_t consumed = drainToCache(16U, 32U);
+      if (hasFreshSettingsCache_(peer, baseline_settings_seq, out_settings)) {
+        SettingsCacheMeta tmp{};
+        (void)fillSettingsFromCache_(peer, out_settings, &tmp);
+        if (out_meta != nullptr) {
+          *out_meta = tmp;
+          out_meta->refresh_performed = true;
+          out_meta->refresh_status = run.status;
+          out_meta->last_refresh_origin = SettingsRefreshOrigin::ManualRefresh;
+        }
+        markSettingsRefreshDone_(refresh_node,
+                                 run.status,
+                                 run.error.message.empty() ? std::string{} : run.error.message);
+        return true;
+      }
+      if (consumed == 0U) {
+        pauseShort_();
+      }
+    }
+
+    // Refresh failed or did not produce a new cache generation.
+    // Return existing cache when available to avoid blank frontend state.
+    SettingsCacheMeta cached_meta{};
+    const bool has_cached = fillSettingsFromCache_(peer, out_settings, &cached_meta, true);
+    refresh_node.settings_last_status = run.status;
+    refresh_node.settings_last_error = !ok ? (!run.error.message.empty() ? run.error.message : "settings_refresh_failed")
+                                           : "settings_refresh_not_settled";
+    markSettingsRefreshDone_(refresh_node, run.status, refresh_node.settings_last_error);
+    if (out_meta != nullptr) {
+      *out_meta = cached_meta;
+      out_meta->refresh_performed = true;
+      out_meta->refresh_status = run.status;
+      out_meta->last_refresh_origin = SettingsRefreshOrigin::ManualRefresh;
+      if (!ok) {
+        out_meta->has_error = true;
+        out_meta->error_message = !run.error.message.empty() ? run.error.message : "settings_refresh_failed";
+      } else {
+        out_meta->has_error = true;
+        out_meta->error_message = "settings_refresh_not_settled";
+      }
+    }
+    return has_cached;
+  }
+
+  /**
+   * @brief Authoritative cache sync helper after setting writes.
+   */
+  bool settingsAfterWriteSync(const MacAddress& peer,
+                              std::vector<CachedSettingView>& out_settings,
+                              uint32_t timeout_ms = 0,
+                              CommandRunResult* out_run = nullptr,
+                              SettingsCacheMeta* out_meta = nullptr) {
+    const bool ok = settingsRefresh(peer, out_settings, timeout_ms, out_run, out_meta);
+    CachedNodeSnapshot& node = ensureCachedNode_(peer);
+    node.settings_last_refresh_origin = SettingsRefreshOrigin::PostWriteSync;
+    if (out_meta != nullptr) {
+      out_meta->last_refresh_origin = SettingsRefreshOrigin::PostWriteSync;
+    }
+    return ok;
+  }
+
+  /**
    * @brief Refresh target slave settings cache by requesting full settings descriptor.
    *
    * Frontend flow:
@@ -1825,7 +2144,19 @@ class ManagementFrontendAdapter {
    * 3) read resolved values with `cachedSettingsResolved(...)`
    */
   bool settingsCacheRefresh(uint32_t* out_req_id = nullptr, uint32_t timeout_ms = 0) {
-    return controller_.settingsGet(out_req_id, timeout_ms);
+    return controller_.nodeBundleGet(kNodeBundleMaskSettings, out_req_id, timeout_ms);
+  }
+
+  /**
+   * @brief Refresh one slave settings cache explicitly by peer.
+   */
+  bool settingsCacheRefreshPeer(const MacAddress& peer,
+                                uint32_t* out_req_id = nullptr,
+                                uint32_t timeout_ms = 0) {
+    return settingsBundleRefreshWithOrigin_(peer,
+                                            SettingsRefreshOrigin::ManualRefresh,
+                                            out_req_id,
+                                            timeout_ms);
   }
 
   /** @brief Refresh one target setting in cache by key. */
@@ -1833,6 +2164,28 @@ class ManagementFrontendAdapter {
                                uint32_t* out_req_id = nullptr,
                                uint32_t timeout_ms = 0) {
     return controller_.settingGetByKey(key, out_req_id, timeout_ms);
+  }
+
+  /**
+   * @brief Refresh one setting in one slave cache by key (peer-explicit).
+   */
+  bool settingsCacheRefreshPeerKey(const MacAddress& peer,
+                                   const std::string& key,
+                                   uint32_t* out_req_id = nullptr,
+                                   uint32_t timeout_ms = 0) {
+    if (!enforceOwnerContext_()) return false;
+    ManagementController::SubmitOptions submit_options{};
+    submit_options.timeout_ms = timeout_ms;
+    submit_options.has_target_peer = true;
+    submit_options.target_peer = peer;
+    const ManagementController::SubmitResult submit_result =
+        submit(static_cast<uint16_t>(ManagementCommandId::SettingGet),
+               management_utils::buildSettingGetByKeyPayload(key),
+               submit_options);
+    if (out_req_id != nullptr) {
+      *out_req_id = submit_result.req_id;
+    }
+    return submit_result.accepted;
   }
 
   /** @brief Refresh one target setting in cache by numeric id. */
@@ -1843,26 +2196,38 @@ class ManagementFrontendAdapter {
   }
 
   /**
+   * @brief Refresh one setting in one slave cache by id (peer-explicit).
+   */
+  bool settingsCacheRefreshPeerId(const MacAddress& peer,
+                                  uint16_t setting_id,
+                                  uint32_t* out_req_id = nullptr,
+                                  uint32_t timeout_ms = 0) {
+    if (!enforceOwnerContext_()) return false;
+    ManagementController::SubmitOptions submit_options{};
+    submit_options.timeout_ms = timeout_ms;
+    submit_options.has_target_peer = true;
+    submit_options.target_peer = peer;
+    const ManagementController::SubmitResult submit_result =
+        submit(static_cast<uint16_t>(ManagementCommandId::SettingGet),
+               management_utils::buildSettingGetByIdPayload(setting_id),
+               submit_options);
+    if (out_req_id != nullptr) {
+      *out_req_id = submit_result.req_id;
+    }
+    return submit_result.accepted;
+  }
+
+  /**
    * @brief Fetch one peer settings list and return resolved UI-ready values.
    *
-   * Internally: target peer -> `SettingsGet` wait -> cache read (`current` else `default`).
+   * Internally: target peer -> `NodeBundleGet(settings)` wait -> cache read
+   * (`current` else `default`).
    */
   bool settingsGetResolved(const MacAddress& peer,
                            std::vector<CachedSettingView>& out_settings,
                            uint32_t timeout_ms = 0,
                            CommandRunResult* out_run = nullptr) {
-    out_settings.clear();
-    ManagementController::SubmitOptions submit_options{};
-    submit_options.timeout_ms = timeout_ms;
-    submit_options.has_target_peer = true;
-    submit_options.target_peer = peer;
-
-    CommandRunResult run{};
-    const bool ok =
-        commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingsGet), {}, run, submit_options);
-    if (out_run != nullptr) *out_run = run;
-    if (!ok) return false;
-    return cachedSettingsResolved(peer, out_settings);
+    return settingsRefresh(peer, out_settings, timeout_ms, out_run, nullptr);
   }
 
   /**
@@ -1880,6 +2245,7 @@ class ManagementFrontendAdapter {
     submit_options.target_peer = peer;
 
     bool all_ok = true;
+    bool any_mutation_submitted = false;
     for (const auto& it : items) {
       SettingsBatchResultItem r{};
       r.key = it.key;
@@ -1897,6 +2263,17 @@ class ManagementFrontendAdapter {
         continue;
       }
 
+      CachedSettingView cached{};
+      if (cachedSettingResolved(peer, it.key, cached) && cached.value == it.value) {
+        r.submitted = false;
+        r.applied = true;
+        r.confirmed = true;
+        r.skipped_unchanged = true;
+        r.status = ManagementStatus::Ok;
+        out_results.push_back(r);
+        continue;
+      }
+
       CommandRunResult set_run{};
       const bool set_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingSet),
                                             management_utils::buildSettingSetByKeyPayload(it.key, it.value),
@@ -1904,6 +2281,9 @@ class ManagementFrontendAdapter {
                                             submit_options);
       r.set_req_id = set_run.req_id;
       r.submitted = set_run.accepted;
+      if (r.submitted) {
+        any_mutation_submitted = true;
+      }
       r.applied = set_ok;
       r.status = set_run.status;
       r.has_error = set_run.has_error;
@@ -1949,9 +2329,12 @@ class ManagementFrontendAdapter {
       out_results.push_back(r);
     }
 
-    if (options.refresh_cache) {
+    if (options.refresh_cache && any_mutation_submitted) {
       CommandRunResult refresh_run{};
-      (void)commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingsGet), {}, refresh_run, submit_options);
+      (void)commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::NodeBundleGet),
+                              management_utils::buildNodeBundleGetPayload(kNodeBundleMaskSettings),
+                              refresh_run,
+                              submit_options);
     }
     return all_ok;
   }
@@ -1970,8 +2353,8 @@ class ManagementFrontendAdapter {
   /**
    * @brief Build one frontend-friendly snapshot in a single call.
    *
-   * Performs descriptor/liveness/time/settings/telemetry pulls for target peer,
-   * then returns merged cached view plus resolved settings.
+   * Uses one `NodeBundleGet` pull for target peer, then returns merged
+   * cached view plus resolved settings (no legacy fallback fan-out).
    */
   bool nodeSnapshotGet(const MacAddress& peer,
                        NodeSnapshotView& out_snapshot,
@@ -1985,36 +2368,84 @@ class ManagementFrontendAdapter {
     submit_options.timeout_ms = timeout_ms;
     submit_options.has_target_peer = true;
     submit_options.target_peer = peer;
-    out_snapshot.desc_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::DescGet),
-                                             {},
-                                             out_snapshot.desc_run,
-                                             submit_options);
+
+    uint8_t bundle_mask = static_cast<uint8_t>(kNodeBundleMaskDevice | kNodeBundleMaskSettings);
     if (include_liveness) {
-      out_snapshot.liveness_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::LiveGet),
-                                                   {},
-                                                   out_snapshot.liveness_run,
-                                                   submit_options);
+      bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskLiveness);
     }
     if (include_time) {
-      out_snapshot.time_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::TimeGet),
-                                               {},
-                                               out_snapshot.time_run,
-                                               submit_options);
+      bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskTime);
     }
-    out_snapshot.settings_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::SettingsGet),
-                                                 {},
-                                                 out_snapshot.settings_run,
-                                                 submit_options);
     if (include_telemetry) {
-      out_snapshot.telemetry_ok = commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::TelemPull),
-                                                    {},
-                                                    out_snapshot.telemetry_run,
-                                                    submit_options);
+      bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskTelemetry);
     }
 
-    (void)drainToCache(64U, 128U);
+    CommandRunResult bundle_run{};
+    const bool bundle_ok =
+        commandRunAndWait(static_cast<uint16_t>(ManagementCommandId::NodeBundleGet),
+                          management_utils::buildNodeBundleGetPayload(bundle_mask),
+                          bundle_run,
+                          submit_options);
+    if (bundle_ok) {
+      out_snapshot.desc_run = bundle_run;
+      out_snapshot.settings_run = bundle_run;
+      if (include_liveness) {
+        out_snapshot.liveness_run = bundle_run;
+      }
+      if (include_time) {
+        out_snapshot.time_run = bundle_run;
+      }
+      if (include_telemetry) {
+        out_snapshot.telemetry_run = bundle_run;
+      }
+
+      (void)drainToCache(64U, 128U);
+      out_snapshot.has_cached_node = cachedNode(peer, out_snapshot.node);
+      (void)cachedSettingsResolved(peer, out_snapshot.resolved_settings);
+      if (out_snapshot.has_cached_node &&
+          out_snapshot.node.settings_completeness != SettingsCacheCompleteness::Full) {
+        out_snapshot.resolved_settings.clear();
+      }
+
+      out_snapshot.desc_ok = out_snapshot.has_cached_node && out_snapshot.node.has_device;
+      out_snapshot.settings_ok = out_snapshot.has_cached_node &&
+                                 out_snapshot.node.has_settings &&
+                                 out_snapshot.node.settings_completeness == SettingsCacheCompleteness::Full;
+      out_snapshot.liveness_ok = !include_liveness || (out_snapshot.has_cached_node && out_snapshot.node.has_liveness);
+      out_snapshot.time_ok = !include_time || (out_snapshot.has_cached_node && out_snapshot.node.has_time);
+      out_snapshot.telemetry_ok = !include_telemetry || (out_snapshot.has_cached_node && out_snapshot.node.has_telemetry);
+
+      bool ok = out_snapshot.desc_ok && out_snapshot.settings_ok;
+      if (include_liveness) ok = ok && out_snapshot.liveness_ok;
+      if (include_time) ok = ok && out_snapshot.time_ok;
+      if (include_telemetry) ok = ok && out_snapshot.telemetry_ok;
+      return ok;
+    }
+    // No legacy fallback calls. Return current cache state when available.
+    out_snapshot.desc_run = bundle_run;
+    out_snapshot.settings_run = bundle_run;
+    if (include_liveness) {
+      out_snapshot.liveness_run = bundle_run;
+    }
+    if (include_time) {
+      out_snapshot.time_run = bundle_run;
+    }
+    if (include_telemetry) {
+      out_snapshot.telemetry_run = bundle_run;
+    }
     out_snapshot.has_cached_node = cachedNode(peer, out_snapshot.node);
     (void)cachedSettingsResolved(peer, out_snapshot.resolved_settings);
+    if (out_snapshot.has_cached_node &&
+        out_snapshot.node.settings_completeness != SettingsCacheCompleteness::Full) {
+      out_snapshot.resolved_settings.clear();
+    }
+    out_snapshot.desc_ok = out_snapshot.has_cached_node && out_snapshot.node.has_device;
+    out_snapshot.settings_ok = out_snapshot.has_cached_node &&
+                               out_snapshot.node.has_settings &&
+                               out_snapshot.node.settings_completeness == SettingsCacheCompleteness::Full;
+    out_snapshot.liveness_ok = !include_liveness || (out_snapshot.has_cached_node && out_snapshot.node.has_liveness);
+    out_snapshot.time_ok = !include_time || (out_snapshot.has_cached_node && out_snapshot.node.has_time);
+    out_snapshot.telemetry_ok = !include_telemetry || (out_snapshot.has_cached_node && out_snapshot.node.has_telemetry);
 
     bool ok = out_snapshot.desc_ok && out_snapshot.settings_ok;
     if (include_liveness) ok = ok && out_snapshot.liveness_ok;
@@ -2541,7 +2972,8 @@ class ManagementFrontendAdapter {
     if (!enforceOwnerContext_()) return false;
     if (isStaleTrackedRequest_(response.req_id)) return false;
     trackResponse_(response);
-    return cacheIngestResponse(response);
+    const bool ingested = cacheIngestResponse(response);
+    return ingested;
   }
 
   /**
@@ -2552,7 +2984,8 @@ class ManagementFrontendAdapter {
     if (!enforceOwnerContext_()) return false;
     if (isStaleTrackedRequest_(event.req_id)) return false;
     trackEvent_(event);
-    return cacheIngestEvent(event);
+    const bool ingested = cacheIngestEvent(event);
+    return ingested;
   }
 
   /**
@@ -2661,6 +3094,8 @@ class ManagementFrontendAdapter {
       if (!key.empty() && s.key != key) continue;
       out_setting.setting_id = s.setting_id;
       out_setting.key = s.key;
+      out_setting.value_type = s.value_type;
+      out_setting.writable = s.writable;
       out_setting.current_value = s.current_value;
       out_setting.default_value = s.default_value;
       out_setting.has_current = !s.current_value.empty();
@@ -2685,6 +3120,8 @@ class ManagementFrontendAdapter {
       CachedSettingView v{};
       v.setting_id = s.setting_id;
       v.key = s.key;
+      v.value_type = s.value_type;
+      v.writable = s.writable;
       v.current_value = s.current_value;
       v.default_value = s.default_value;
       v.has_current = !s.current_value.empty();
@@ -2744,6 +3181,29 @@ class ManagementFrontendAdapter {
       return true;
     }
 
+    // Paged descriptor flows emit intermediate chunks as OkDeferred.
+    // They must still be merged into cache, otherwise only the terminal page remains.
+    const bool status_allows_descriptor_ingest =
+        (response.status == ManagementStatus::Ok || response.status == ManagementStatus::OkDeferred);
+    if (!status_allows_descriptor_ingest) {
+      const bool settings_related_cmd =
+          (response.cmd_id == static_cast<uint16_t>(ManagementCommandId::NodeBundleGet)) ||
+          (response.cmd_id == static_cast<uint16_t>(ManagementCommandId::SettingGet));
+      if (settings_related_cmd) {
+        MacAddress failed_peer{};
+        if (resolvePeerForCache_(response, failed_peer)) {
+          CachedNodeSnapshot& node = ensureCachedNode_(failed_peer);
+          if (node.settings_refresh_inflight &&
+              (node.settings_refresh_req_id == 0U || node.settings_refresh_req_id == response.req_id)) {
+            markSettingsRefreshDone_(node,
+                                     response.status,
+                                     management_utils::managementStatusToString(response.status));
+          }
+        }
+      }
+      return false;
+    }
+
     if (response.payload.empty()) {
       return false;
     }
@@ -2774,17 +3234,117 @@ class ManagementFrontendAdapter {
         node.time = desc.time;
         return true;
       case DescriptorResponseType::Settings:
-        node.has_settings = true;
-        node.settings = desc.settings;
+        if (!desc.is_paged) {
+          node.settings = desc.settings;
+        } else {
+          if (desc.cursor == 0U) {
+            node.settings.clear();
+          }
+          for (const auto& st : desc.settings) {
+            upsertCachedSetting_(node.settings, st);
+          }
+          if (desc.done && desc.total_count == 0U) {
+            node.settings.clear();
+          }
+        }
+        node.has_settings = !node.settings.empty();
+        node.settings_seq = node.update_seq;
+        node.settings_completeness = settingsCompletenessFromPaging_(desc, node.settings);
+        node.settings_updated_ms = monotonicMs_();
+        node.settings_last_status = ManagementStatus::Ok;
+        node.settings_last_error.clear();
+        if (!desc.is_paged || desc.done) {
+          markSettingsRefreshDone_(node, ManagementStatus::Ok);
+        }
         return true;
       case DescriptorResponseType::Setting:
         node.has_settings = true;
         upsertCachedSetting_(node.settings, desc.setting);
+        node.settings_seq = node.update_seq;
+        if (node.settings_completeness == SettingsCacheCompleteness::Empty) {
+          node.settings_completeness = SettingsCacheCompleteness::Partial;
+        }
+        node.settings_updated_ms = monotonicMs_();
+        node.settings_last_status = ManagementStatus::Ok;
+        node.settings_last_error.clear();
+        markSettingsRefreshDone_(node, ManagementStatus::Ok);
         return true;
       case DescriptorResponseType::TelemetrySnapshot:
         node.has_telemetry = true;
         node.telemetry_samples = desc.telemetry_samples;
         return true;
+      case DescriptorResponseType::NodeBundle: {
+        uint8_t bundle_mask = desc.bundle_mask;
+        if (bundle_mask == 0U) {
+          if (!desc.device.device_type.empty() ||
+              !desc.device.device_id.empty() ||
+              !desc.device.device_name.empty() ||
+              !desc.device.hw_version.empty() ||
+              !desc.device.sw_version.empty() ||
+              !desc.device.build_id.empty()) {
+            bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskDevice);
+          }
+          if (!desc.liveness.state.empty() || desc.liveness.uptime_ms != 0U || desc.liveness.online) {
+            bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskLiveness);
+          }
+          if (desc.time.epoch_s != 0ULL || desc.time.uptime_ms != 0U) {
+            bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskTime);
+          }
+          if (!desc.settings.empty() || desc.is_paged) {
+            bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskSettings);
+          }
+          if (!desc.telemetry_samples.empty()) {
+            bundle_mask = static_cast<uint8_t>(bundle_mask | kNodeBundleMaskTelemetry);
+          }
+        }
+        const bool include_device = ((bundle_mask & kNodeBundleMaskDevice) != 0U);
+        const bool include_liveness = ((bundle_mask & kNodeBundleMaskLiveness) != 0U);
+        const bool include_time = ((bundle_mask & kNodeBundleMaskTime) != 0U);
+        const bool include_settings = ((bundle_mask & kNodeBundleMaskSettings) != 0U);
+        const bool include_telemetry = ((bundle_mask & kNodeBundleMaskTelemetry) != 0U);
+
+        if (include_device) {
+          node.has_device = true;
+          node.device = desc.device;
+        }
+        if (include_liveness) {
+          node.has_liveness = true;
+          node.liveness = desc.liveness;
+        }
+        if (include_time) {
+          node.has_time = true;
+          node.time = desc.time;
+        }
+        if (include_telemetry) {
+          node.has_telemetry = true;
+          node.telemetry_samples = desc.telemetry_samples;
+        }
+        if (include_settings) {
+          if (!desc.is_paged) {
+            node.settings = desc.settings;
+          } else {
+            if (desc.cursor == 0U) {
+              node.settings.clear();
+            }
+            for (const auto& st : desc.settings) {
+              upsertCachedSetting_(node.settings, st);
+            }
+            if (desc.done && desc.total_count == 0U) {
+              node.settings.clear();
+            }
+          }
+          node.has_settings = !node.settings.empty();
+          node.settings_seq = node.update_seq;
+          node.settings_completeness = settingsCompletenessFromPaging_(desc, node.settings);
+          node.settings_updated_ms = monotonicMs_();
+          node.settings_last_status = ManagementStatus::Ok;
+          node.settings_last_error.clear();
+          if (!desc.is_paged || desc.done) {
+            markSettingsRefreshDone_(node, ManagementStatus::Ok);
+          }
+        }
+        return true;
+      }
       default:
         return false;
     }
@@ -2824,7 +3384,14 @@ class ManagementFrontendAdapter {
         if (std::find(cached_paired_peers_.begin(), cached_paired_peers_.end(), msg.peer) == cached_paired_peers_.end()) {
           cached_paired_peers_.push_back(msg.peer);
         }
-        (void)ensureCachedNode_(msg.peer);
+        CachedNodeSnapshot& node = ensureCachedNode_(msg.peer);
+        if (auto_pair_settings_bootstrap_enabled_ &&
+            (!node.has_settings || node.settings_completeness == SettingsCacheCompleteness::Empty)) {
+          (void)settingsBundleRefreshWithOrigin_(msg.peer,
+                                                 SettingsRefreshOrigin::PairBootstrap,
+                                                 nullptr,
+                                                 pair_bootstrap_settings_timeout_ms_);
+        }
         return true;
       }
       return false;
@@ -2961,6 +3528,25 @@ class ManagementFrontendAdapter {
       return false;
     }
     return management_utils::parseStringPayloadU16(event.payload, out_message);
+  }
+
+  /** @brief Decode discovery snapshot response payload (`DiscoverySnapshotGet`). */
+  static bool decodeDiscoverySnapshotResponse(const ManagementResponse& response,
+                                              std::vector<MacAddress>& out_peers) {
+    if (response.cmd_id != static_cast<uint16_t>(ManagementCommandId::DiscoverySnapshotGet)) {
+      return false;
+    }
+    return management_utils::parseDiscoverySnapshotPayload(response.payload, out_peers);
+  }
+
+  /** @brief Decode discovery snapshot payload with RSSI/age metadata (`DiscoverySnapshotGet`). */
+  static bool decodeDiscoverySnapshotResponseDetailed(
+      const ManagementResponse& response,
+      std::vector<ManagementDiscoveredPeerInfo>& out_peers) {
+    if (response.cmd_id != static_cast<uint16_t>(ManagementCommandId::DiscoverySnapshotGet)) {
+      return false;
+    }
+    return management_utils::parseDiscoverySnapshotPayloadDetailed(response.payload, out_peers);
   }
 
   /** @brief Decode paired snapshot response payload (`PairedSnapshotGet`). */
@@ -3346,6 +3932,47 @@ class ManagementFrontendAdapter {
     return d;
   }
 
+  /** @brief Read aggregate busy state across transport backlog + in-flight operations. */
+  BusySnapshot busySnapshot() const {
+    BusySnapshot out{};
+    const uint64_t now_ms = monotonicMs_();
+    out.queue = queueDepth();
+    out.transport_backlog =
+        (out.queue.requests > 0U) || (out.queue.responses > 0U) || (out.queue.events > 0U);
+
+    for (const auto& s : req_status_) {
+      if (!s.terminal && !isTerminalState_(s.state)) {
+        ++out.inflight_commands;
+      }
+    }
+    out.command_inflight = (out.inflight_commands > 0U);
+    if (service_ != nullptr && service_->topologyBusy()) {
+      out.command_inflight = true;
+      if (out.inflight_commands == 0U) {
+        out.inflight_commands = 1U;
+      }
+    }
+
+    constexpr uint64_t kRefreshBusyWindowMs = 20000U;
+    for (const auto& node : cached_nodes_) {
+      if (!node.settings_refresh_inflight) continue;
+      const bool hasAttemptTs = (node.settings_refresh_last_attempt_ms > 0U);
+      const uint64_t age_ms =
+          (hasAttemptTs && now_ms >= node.settings_refresh_last_attempt_ms)
+              ? (now_ms - node.settings_refresh_last_attempt_ms)
+              : 0U;
+      if (!hasAttemptTs || age_ms <= kRefreshBusyWindowMs) {
+        ++out.settings_refresh_nodes;
+      }
+    }
+    out.settings_refresh_inflight = (out.settings_refresh_nodes > 0U);
+
+    // Busy reflects active command execution, transport pressure, or fresh settings refresh work.
+    out.busy = out.command_inflight || out.transport_backlog || out.settings_refresh_inflight;
+    out.updated_ms = now_ms;
+    return out;
+  }
+
   /** @brief Read management runtime counters when runtime is bound. */
   bool runtimeStats(ManagementRuntime::Stats& out_stats) const {
     if (runtime_ == nullptr) return false;
@@ -3363,9 +3990,7 @@ class ManagementFrontendAdapter {
             size_t max_responses = 32,
             size_t max_events = 64) {
     if (!enforceOwnerContext_()) return;
-    if (runtime_ != nullptr) {
-      runtime_->tick(now_ms, max_requests_per_transport, max_responses, max_events);
-    }
+    tickRuntimeOwned_(now_ms, max_requests_per_transport, max_responses, max_events);
   }
 
  private:
@@ -3907,6 +4532,7 @@ class ManagementFrontendAdapter {
       add.terminal = false;
       add.updated_seq = ++status_update_seq_;
       req_status_.push_back(add);
+      trimReqStatus_();
       return;
     }
     s->cmd_id = cmd_id;
@@ -3953,6 +4579,7 @@ class ManagementFrontendAdapter {
       }
       add.updated_seq = ++status_update_seq_;
       req_status_.push_back(add);
+      trimReqStatus_();
       return;
     }
 
@@ -4028,6 +4655,7 @@ class ManagementFrontendAdapter {
       }
       add.updated_seq = ++status_update_seq_;
       req_status_.push_back(add);
+      trimReqStatus_();
       return;
     }
 
@@ -4091,6 +4719,40 @@ class ManagementFrontendAdapter {
                       event_ring_.begin() + static_cast<std::vector<NormalizedEventRecord>::difference_type>(drop));
   }
 
+  void trimReqStatus_() {
+    while (req_status_.size() > req_status_capacity_) {
+      size_t drop_idx = req_status_.size();
+      bool found = false;
+      uint64_t oldest_seq = 0U;
+
+      for (size_t i = 0U; i < req_status_.size(); ++i) {
+        if (!req_status_[i].terminal) continue;
+        if (!found || req_status_[i].updated_seq < oldest_seq) {
+          found = true;
+          oldest_seq = req_status_[i].updated_seq;
+          drop_idx = i;
+        }
+      }
+
+      if (!found) {
+        for (size_t i = 0U; i < req_status_.size(); ++i) {
+          if (!found || req_status_[i].updated_seq < oldest_seq) {
+            found = true;
+            oldest_seq = req_status_[i].updated_seq;
+            drop_idx = i;
+          }
+        }
+      }
+
+      if (!found || drop_idx >= req_status_.size()) {
+        break;
+      }
+      releaseMutationLaneByReq_(req_status_[drop_idx].req_id);
+      req_status_.erase(req_status_.begin() +
+                        static_cast<std::vector<CommandStatusView>::difference_type>(drop_idx));
+    }
+  }
+
   void upsertReqStatus_(const CommandStatusView& in_status) {
     CommandStatusView applied = in_status;
     if (applied.updated_seq == 0U) {
@@ -4105,6 +4767,7 @@ class ManagementFrontendAdapter {
       return;
     }
     req_status_.push_back(applied);
+    trimReqStatus_();
   }
 
   CommandStatusView* findReqStatusMutable_(uint32_t req_id) {
@@ -4133,6 +4796,154 @@ class ManagementFrontendAdapter {
       }
     }
     settings.push_back(in_setting);
+  }
+
+  static SettingsCacheCompleteness settingsCompletenessFromPaging_(
+      const DescriptorResponse& desc,
+      const std::vector<SettingDescriptor>& merged_settings) {
+    if (!desc.is_paged) {
+      return merged_settings.empty() ? SettingsCacheCompleteness::Empty : SettingsCacheCompleteness::Full;
+    }
+    if (desc.done) {
+      if (desc.total_count == 0U || merged_settings.empty()) {
+        return SettingsCacheCompleteness::Empty;
+      }
+      if (merged_settings.size() < static_cast<size_t>(desc.total_count)) {
+        return SettingsCacheCompleteness::Partial;
+      }
+      return SettingsCacheCompleteness::Full;
+    }
+    return merged_settings.empty() ? SettingsCacheCompleteness::Empty : SettingsCacheCompleteness::Partial;
+  }
+
+  bool fillSettingsFromCache_(const MacAddress& peer,
+                              std::vector<CachedSettingView>& out_settings,
+                              SettingsCacheMeta* out_meta,
+                              bool require_full = false) const {
+    out_settings.clear();
+    const CachedNodeSnapshot* node = findCachedNode_(peer);
+    if (node == nullptr || !node->has_settings) {
+      if (out_meta != nullptr) {
+        out_meta->cache_hit = false;
+        out_meta->completeness = SettingsCacheCompleteness::Empty;
+        out_meta->ready_for_ui = false;
+        out_meta->refresh_inflight = (node != nullptr) ? node->settings_refresh_inflight : false;
+        out_meta->last_refresh_origin =
+            (node != nullptr) ? node->settings_last_refresh_origin : SettingsRefreshOrigin::Unknown;
+        out_meta->settings_seq = (node != nullptr) ? node->settings_seq : 0U;
+      }
+      return false;
+    }
+
+    if (out_meta != nullptr) {
+      out_meta->cache_hit = true;
+      out_meta->completeness = node->settings_completeness;
+      out_meta->ready_for_ui = (node->settings_completeness == SettingsCacheCompleteness::Full);
+      out_meta->refresh_inflight = node->settings_refresh_inflight;
+      out_meta->last_refresh_origin = node->settings_last_refresh_origin;
+      out_meta->settings_seq = node->settings_seq;
+      out_meta->cache_updated_ms = node->settings_updated_ms;
+      const uint64_t now_ms = monotonicMs_();
+      out_meta->cache_age_ms = (node->settings_updated_ms > 0U && now_ms >= node->settings_updated_ms)
+                                   ? (now_ms - node->settings_updated_ms)
+                                   : 0U;
+      out_meta->refresh_status = node->settings_last_status;
+      if (!node->settings_last_error.empty()) {
+        out_meta->has_error = true;
+        out_meta->error_message = node->settings_last_error;
+      }
+    }
+    if (require_full && node->settings_completeness != SettingsCacheCompleteness::Full) {
+      if (out_meta != nullptr) {
+        out_meta->ready_for_ui = false;
+      }
+      return false;
+    }
+    if (!cachedSettingsResolved(peer, out_settings)) {
+      if (out_meta != nullptr) {
+        out_meta->cache_hit = false;
+        out_meta->completeness = SettingsCacheCompleteness::Empty;
+        out_meta->ready_for_ui = false;
+        out_meta->refresh_inflight = node->settings_refresh_inflight;
+        out_meta->last_refresh_origin = node->settings_last_refresh_origin;
+        out_meta->settings_seq = node->settings_seq;
+      }
+      return false;
+    }
+    if (out_meta != nullptr) {
+      out_meta->ready_for_ui = (node->settings_completeness == SettingsCacheCompleteness::Full);
+    }
+    return true;
+  }
+
+  void markSettingsRefreshInflight_(CachedNodeSnapshot& node,
+                                    SettingsRefreshOrigin origin,
+                                    uint32_t req_id) {
+    node.settings_refresh_inflight = true;
+    node.settings_refresh_req_id = req_id;
+    node.settings_refresh_started_ms = monotonicMs_();
+    node.settings_refresh_last_attempt_ms = node.settings_refresh_started_ms;
+    node.settings_last_refresh_origin = origin;
+  }
+
+  void markSettingsRefreshDone_(CachedNodeSnapshot& node,
+                                ManagementStatus status,
+                                const std::string& error_message = std::string()) {
+    node.settings_refresh_inflight = false;
+    node.settings_refresh_req_id = 0U;
+    node.settings_last_status = status;
+    if (!error_message.empty()) {
+      node.settings_last_error = error_message;
+    } else {
+      node.settings_last_error.clear();
+    }
+  }
+
+  bool settingsBundleRefreshWithOrigin_(const MacAddress& peer,
+                                        SettingsRefreshOrigin origin,
+                                        uint32_t* out_req_id = nullptr,
+                                        uint32_t timeout_ms = 0) {
+    if (!enforceOwnerContext_()) return false;
+    ManagementController::SubmitOptions submit_options{};
+    submit_options.timeout_ms = timeout_ms;
+    submit_options.has_target_peer = true;
+    submit_options.target_peer = peer;
+
+    const ManagementController::SubmitResult bundle_submit =
+        submit(static_cast<uint16_t>(ManagementCommandId::NodeBundleGet),
+               management_utils::buildNodeBundleGetPayload(kNodeBundleMaskSettings),
+               submit_options);
+    if (out_req_id != nullptr) {
+      *out_req_id = bundle_submit.req_id;
+    }
+    if (!bundle_submit.accepted) {
+      CachedNodeSnapshot& node = ensureCachedNode_(peer);
+      node.settings_last_refresh_origin = origin;
+      node.settings_last_status = bundle_submit.status;
+      node.settings_last_error = "settings_refresh_submit_failed";
+      node.settings_refresh_inflight = false;
+      node.settings_refresh_req_id = 0U;
+      return false;
+    }
+    CachedNodeSnapshot& node = ensureCachedNode_(peer);
+    markSettingsRefreshInflight_(node, origin, bundle_submit.req_id);
+    return true;
+  }
+
+  bool hasFreshSettingsCache_(const MacAddress& peer,
+                              uint32_t baseline_settings_seq,
+                              std::vector<CachedSettingView>& out_settings) const {
+    const CachedNodeSnapshot* node = findCachedNode_(peer);
+    if (node == nullptr || !node->has_settings) {
+      return false;
+    }
+    if (node->settings_completeness != SettingsCacheCompleteness::Full) {
+      return false;
+    }
+    if (node->settings_seq <= baseline_settings_seq) {
+      return false;
+    }
+    return cachedSettingsResolved(peer, out_settings);
   }
 
   bool resolvePeerForCache_(const ManagementResponse& response, MacAddress& out_peer) const {
@@ -4165,10 +4976,66 @@ class ManagementFrontendAdapter {
     return nullptr;
   }
 
+  bool isCachedPairedPeer_(const MacAddress& peer) const {
+    for (const auto& p : cached_paired_peers_) {
+      if (p == peer) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  size_t pickCachedNodeEvictIndex_(bool require_unpaired, bool require_not_refresh) const {
+    size_t pick = cached_nodes_.size();
+    bool found = false;
+    uint32_t best_seq = 0U;
+    for (size_t i = 0U; i < cached_nodes_.size(); ++i) {
+      const CachedNodeSnapshot& node = cached_nodes_[i];
+      if (require_unpaired && isCachedPairedPeer_(node.peer)) {
+        continue;
+      }
+      if (require_not_refresh && node.settings_refresh_inflight) {
+        continue;
+      }
+      if (!found || node.update_seq < best_seq) {
+        found = true;
+        best_seq = node.update_seq;
+        pick = i;
+      }
+    }
+    return found ? pick : cached_nodes_.size();
+  }
+
+  void evictCachedNodeForCapacity_() {
+    if (cached_nodes_.empty()) {
+      return;
+    }
+    size_t pick = pickCachedNodeEvictIndex_(true, true);
+    if (pick >= cached_nodes_.size()) {
+      pick = pickCachedNodeEvictIndex_(true, false);
+    }
+    if (pick >= cached_nodes_.size()) {
+      pick = pickCachedNodeEvictIndex_(false, true);
+    }
+    if (pick >= cached_nodes_.size()) {
+      pick = pickCachedNodeEvictIndex_(false, false);
+    }
+    if (pick >= cached_nodes_.size()) {
+      return;
+    }
+    const MacAddress evicted_peer = cached_nodes_[pick].peer;
+    cached_nodes_.erase(cached_nodes_.begin() +
+                        static_cast<std::vector<CachedNodeSnapshot>::difference_type>(pick));
+    removeChildPushPeerState_(evicted_peer);
+  }
+
   CachedNodeSnapshot& ensureCachedNode_(const MacAddress& peer) {
     CachedNodeSnapshot* node = findCachedNode_(peer);
     if (node != nullptr) {
       return *node;
+    }
+    if (cached_nodes_.size() >= cached_nodes_capacity_) {
+      evictCachedNodeForCapacity_();
     }
     CachedNodeSnapshot add{};
     add.peer = peer;
@@ -4297,6 +5164,29 @@ class ManagementFrontendAdapter {
     return !out_cmd.config.metrics.empty();
   }
 
+  void tickRuntimeOwned_(uint32_t now_ms,
+                         size_t max_requests_per_transport,
+                         size_t max_responses,
+                         size_t max_events) {
+    if (runtime_ == nullptr) return;
+    runtime_->tick(now_ms, max_requests_per_transport, max_responses, max_events);
+    if (runtime_tick_calls_ < UINT32_MAX) ++runtime_tick_calls_;
+  }
+
+  void tickRuntimeFromWait_(size_t max_requests_per_transport,
+                            size_t max_responses,
+                            size_t max_events) {
+    if (runtime_ == nullptr) return;
+    if (!wait_loops_tick_runtime_) {
+      if (wait_runtime_tick_skips_ < UINT32_MAX) ++wait_runtime_tick_skips_;
+      return;
+    }
+    const uint32_t now_ms = static_cast<uint32_t>(monotonicMs_());
+    runtime_->tick(now_ms, max_requests_per_transport, max_responses, max_events);
+    if (runtime_tick_calls_ < UINT32_MAX) ++runtime_tick_calls_;
+    if (wait_runtime_tick_calls_ < UINT32_MAX) ++wait_runtime_tick_calls_;
+  }
+
   static uint64_t monotonicMs_() {
 #if defined(ARDUINO)
     return static_cast<uint64_t>(millis());
@@ -4317,6 +5207,14 @@ class ManagementFrontendAdapter {
     return 1U;
 #else
     return static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
+  }
+
+  static void pauseShort_() {
+#if defined(ARDUINO)
+    delay(1);
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
 #endif
   }
 
@@ -4360,7 +5258,9 @@ class ManagementFrontendAdapter {
   std::vector<MacAddress> cached_discovered_peers_{};
   std::vector<MacAddress> cached_paired_peers_{};
   std::vector<CachedNodeSnapshot> cached_nodes_{};
+  size_t cached_nodes_capacity_ = 18U;
   std::vector<CommandStatusView> req_status_{};
+  size_t req_status_capacity_ = 256U;
   std::vector<MutationLaneClaim> mutation_lane_claims_{};
   std::vector<NormalizedEventRecord> event_ring_{};
   size_t event_ring_capacity_ = 256U;
@@ -4369,6 +5269,8 @@ class ManagementFrontendAdapter {
   uint32_t orchestration_wait_default_ms_ = 3000U;
   bool batch_confirm_default_ = true;
   bool batch_refresh_cache_default_ = true;
+  bool auto_pair_settings_bootstrap_enabled_ = true;
+  uint32_t pair_bootstrap_settings_timeout_ms_ = 4500U;
   uint64_t paired_generation_ = 0U;
   uint64_t discovery_generation_ = 0U;
   uint32_t cache_update_seq_ = 0U;
@@ -4382,6 +5284,10 @@ class ManagementFrontendAdapter {
   mutable bool owner_token_initialized_ = false;
   mutable uint64_t owner_token_ = 0U;
   mutable uint32_t owner_violation_count_ = 0U;
+  bool wait_loops_tick_runtime_ = true;
+  uint32_t runtime_tick_calls_ = 0U;
+  uint32_t wait_runtime_tick_calls_ = 0U;
+  uint32_t wait_runtime_tick_skips_ = 0U;
 };
 
 }  // namespace espnow_link

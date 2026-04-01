@@ -26,6 +26,25 @@ constexpr uint16_t kControlCmdReset = 0x0002;
 constexpr uint16_t kControlCmdAudioPing = 0x0004;
 constexpr uint16_t kControlResultUnsupported = 0x0004;
 constexpr uint16_t kPresencePingEventId = 0x7F12;
+
+const char* topologyTriggerReasonText_(uint8_t reason) {
+  switch (reason) {
+    case 0x00:
+      return "ok";
+    case 0x01:
+      return "unauthorized_peer";
+    case 0x02:
+      return "stale_topology";
+    case 0x03:
+      return "bad_index";
+    case 0x04:
+      return "range_rejected";
+    case 0x05:
+      return "busy";
+    default:
+      return "unknown";
+  }
+}
 }  // namespace
 
 namespace espnow_link {
@@ -186,6 +205,30 @@ void SlaveEventLogger::clearPeer() {
 
 void SlaveEventLogger::onEvent(const Event& e) {
   const char* prefix = (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE";
+  if (e.type == Event::Type::TopologyTriggerReceived ||
+      e.type == Event::Type::TopologyTriggerRejected ||
+      e.type == Event::Type::TopologyTriggerDuplicate) {
+    const char* decision = "accepted";
+    if (e.type == Event::Type::TopologyTriggerRejected) {
+      decision = "rejected";
+    } else if (e.type == Event::Type::TopologyTriggerDuplicate) {
+      decision = "duplicate";
+    }
+    logf_("[%s][TOPO][RX] seq=%u decision=%s reason=%s(%u) src=%u:%u dst=%u:%u peer=%s corr=%lu\n",
+          prefix,
+          static_cast<unsigned>(e.event_id),
+          decision,
+          topologyTriggerReasonText_(e.reason),
+          static_cast<unsigned>(e.reason),
+          static_cast<unsigned>(e.src_role),
+          static_cast<unsigned>(e.src_vid),
+          static_cast<unsigned>(e.dst_role),
+          static_cast<unsigned>(e.dst_vid),
+          macText_(e.peer).c_str(),
+          static_cast<unsigned long>(e.correlation_id));
+    return;
+  }
+
   if (e.type == Event::Type::Paired) {
     peer_ = e.peer;
     has_peer_ = true;
@@ -339,8 +382,12 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
   if (query.type == DescriptorQueryType::TopologyStageClear) {
     resetTopologyStageSession_();
     if (!manager_->clearStagedTopology()) {
+      logf_("[%s][TOPO] stage_clear status=fail\n",
+            (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
       return sendDescriptorError_(from, corr_id, "topology stage clear failed");
     }
+    logf_("[%s][TOPO] stage_clear status=ok\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
     return sendDescriptorAck_(from, corr_id, "topology stage cleared");
   }
 
@@ -353,6 +400,13 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
     topology_stage_snapshot_.topology_version = query.topology_version;
     topology_stage_snapshot_.index_neg = query.topology_index_neg;
     topology_stage_snapshot_.index_pos = query.topology_index_pos;
+    logf_("[%s][TOPO] stage_begin ver=%lu neg=%u pos=%u schema=%u owner=%s\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
+          static_cast<unsigned long>(query.topology_version),
+          static_cast<unsigned int>(query.topology_index_neg),
+          static_cast<unsigned int>(query.topology_index_pos),
+          static_cast<unsigned int>(query.topology_schema_version),
+          macText_(from).c_str());
     return sendDescriptorAck_(from, corr_id, "topology stage begin ok");
   }
 
@@ -375,6 +429,13 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
     slot.delay_ms = query.topology_delay_ms;
     slot.hold_ms = query.topology_hold_ms;
     topology_stage_slot_seen_[query.topology_slot_index] = true;
+    logf_("[%s][TOPO] stage_slot idx=%u enabled=%u rel=%d group=%u peer=%s\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
+          static_cast<unsigned int>(query.topology_slot_index),
+          static_cast<unsigned int>(slot.enabled ? 1U : 0U),
+          static_cast<int>(slot.relative_index),
+          static_cast<unsigned int>(slot.group_id),
+          macText_(slot.peer).c_str());
     return sendDescriptorAck_(from, corr_id, "topology slot staged");
   }
 
@@ -390,6 +451,11 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
     group.group_id = query.topology_group_id;
     group.seed = query.topology_group_seed;
     topology_stage_group_seen_[query.topology_group_slot] = true;
+    logf_("[%s][TOPO] stage_group slot=%u enabled=%u gid=%u\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
+          static_cast<unsigned int>(query.topology_group_slot),
+          static_cast<unsigned int>(group.enabled ? 1U : 0U),
+          static_cast<unsigned int>(group.group_id));
     return sendDescriptorAck_(from, corr_id, "topology group staged");
   }
 
@@ -404,19 +470,31 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
       if (stage_error.empty()) {
         stage_error = "topology stage failed";
       }
+      logf_("[%s][TOPO] stage_finalize status=fail reason=%s\n",
+            (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
+            stage_error.c_str());
       return sendDescriptorError_(from, corr_id, stage_error);
     }
+    logf_("[%s][TOPO] stage_finalize status=ok\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
     return sendDescriptorAck_(from, corr_id, "topology staged");
   }
 
   if (query.type == DescriptorQueryType::TopologyCommit) {
+    logf_("[%s][TOPO] commit_start\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
     std::string commit_error{};
     if (!manager_->commitStagedTopology(&commit_error)) {
       if (commit_error.empty()) {
         commit_error = "topology commit failed";
       }
+      logf_("[%s][TOPO] commit_fail reason=%s\n",
+            (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
+            commit_error.c_str());
       return sendDescriptorError_(from, corr_id, commit_error);
     }
+    logf_("[%s][TOPO] commit_ok\n",
+          (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
     return sendDescriptorAck_(from, corr_id, "topology committed");
   }
 
@@ -425,12 +503,37 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
     if (!manager_->getTopologyStatus(status)) {
       return sendDescriptorError_(from, corr_id, "topology status unavailable");
     }
+    const uint8_t staged_state =
+        static_cast<uint8_t>(status.has_staged ? status.staged.state : EspNowManager::TopologyState::None);
+    const uint8_t committed_state =
+        static_cast<uint8_t>(status.has_committed ? status.committed.state : EspNowManager::TopologyState::None);
+    const uint8_t index_neg =
+        status.has_committed ? status.committed.index_neg : (status.has_staged ? status.staged.index_neg : 0U);
+    const uint8_t index_pos =
+        status.has_committed ? status.committed.index_pos : (status.has_staged ? status.staged.index_pos : 0U);
+    char staged_checksum_hex[11] = {0};
+    char committed_checksum_hex[11] = {0};
+    std::snprintf(staged_checksum_hex,
+                  sizeof(staged_checksum_hex),
+                  "0x%08lX",
+                  static_cast<unsigned long>(status.has_staged ? status.staged.checksum : 0U));
+    std::snprintf(committed_checksum_hex,
+                  sizeof(committed_checksum_hex),
+                  "0x%08lX",
+                  static_cast<unsigned long>(status.has_committed ? status.committed.checksum : 0U));
+    // Keep topology status ack compact to fit pull payload limits.
+    // Include the verify-critical committed fields plus staged/committed presence bits.
     std::string message = "staged=" + std::string(status.has_staged ? "1" : "0") +
                           " committed=" + std::string(status.has_committed ? "1" : "0") +
-                          " staged_ver=" + std::to_string(status.staged.topology_version) +
                           " committed_ver=" + std::to_string(status.committed.topology_version) +
-                          " staged_slots=" + std::to_string(static_cast<unsigned int>(status.staged.enabled_slot_count)) +
-                          " committed_slots=" + std::to_string(static_cast<unsigned int>(status.committed.enabled_slot_count));
+                          " committed_slots=" + std::to_string(static_cast<unsigned int>(status.committed.enabled_slot_count)) +
+                          " committed_groups=" + std::to_string(static_cast<unsigned int>(status.committed.enabled_group_count)) +
+                          " committed_state=" + std::to_string(static_cast<unsigned int>(committed_state)) +
+                          " index_neg=" + std::to_string(static_cast<unsigned int>(index_neg)) +
+                          " index_pos=" + std::to_string(static_cast<unsigned int>(index_pos)) +
+                          " committed_checksum=" + std::string(committed_checksum_hex);
+    (void)staged_state;
+    (void)staged_checksum_hex;
     return sendDescriptorAck_(from, corr_id, message);
   }
 
@@ -483,6 +586,76 @@ bool SlaveControlPlane::onPullRequest(const MacAddress& from,
         return true;
       }
     } else if (topology_handled) {
+      return false;
+    }
+
+    if (query.type == DescriptorQueryType::GetNodeBundle) {
+      DescriptorQuery chunk_query = query;
+      const bool settings_requested = (chunk_query.bundle_mask & kNodeBundleMaskSettings) != 0U;
+      if (settings_requested && !chunk_query.paged) {
+        chunk_query.paged = true;
+        chunk_query.cursor = 0U;
+        chunk_query.page_size = 16U;
+      }
+
+      uint16_t cursor = chunk_query.cursor;
+      bool first_chunk = true;
+      static constexpr uint8_t kMaxBundleChunks = 32U;
+
+      for (uint8_t chunk_idx = 0U; chunk_idx < kMaxBundleChunks; ++chunk_idx) {
+        chunk_query.cursor = cursor;
+        if (settings_requested && !first_chunk) {
+          // First page carries full mask; follow-up pages carry settings only
+          // to maximize settings throughput.
+          chunk_query.bundle_mask = kNodeBundleMaskSettings;
+        }
+
+        DescriptorResponse response{};
+        if (!manager_->executeDescriptorQuery(*descriptor_, chunk_query, response)) {
+          response.type = DescriptorResponseType::Error;
+          response.message = "descriptor handler failure";
+        }
+
+        std::vector<uint8_t> encoded{};
+        if (!manager_->encodeDescriptorResponsePayload(response, encoded)) {
+          return false;
+        }
+        if (!manager_->sendPullResponse(from, encoded.data(), encoded.size(), corr_id)) {
+          return false;
+        }
+
+        DescriptorResponse emitted{};
+        if (!manager_->decodeDescriptorResponsePayload(encoded.data(), encoded.size(), emitted)) {
+          return true;
+        }
+        if (emitted.type != DescriptorResponseType::NodeBundle) {
+          return true;
+        }
+        if (!emitted.is_paged || emitted.done) {
+          return true;
+        }
+        if (emitted.next_cursor <= cursor) {
+          DescriptorResponse err{};
+          err.type = DescriptorResponseType::Error;
+          err.message = "bundle paging stalled";
+          std::vector<uint8_t> err_encoded{};
+          if (manager_->encodeDescriptorResponsePayload(err, err_encoded)) {
+            (void)manager_->sendPullResponse(from, err_encoded.data(), err_encoded.size(), corr_id);
+          }
+          return false;
+        }
+
+        cursor = emitted.next_cursor;
+        first_chunk = false;
+      }
+
+      DescriptorResponse err{};
+      err.type = DescriptorResponseType::Error;
+      err.message = "bundle paging limit exceeded";
+      std::vector<uint8_t> err_encoded{};
+      if (manager_->encodeDescriptorResponsePayload(err, err_encoded)) {
+        (void)manager_->sendPullResponse(from, err_encoded.data(), err_encoded.size(), corr_id);
+      }
       return false;
     }
 
@@ -639,7 +812,7 @@ void SlaveRestartResetHook::onRuntimeTick(uint32_t /*now_ms*/) {
   if (!readAndClearFlag_(cfg_.restart_request_key)) {
     return;
   }
-  logf_("[%s] restart flag processed: deep-sleep reboot in %lums\n",
+  logf_("[%s] restart flag processed: reboot in %lums\n",
         (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
         static_cast<unsigned long>(cfg_.reboot_delay_ms));
 #if defined(ARDUINO)

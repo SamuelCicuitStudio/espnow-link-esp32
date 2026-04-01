@@ -57,6 +57,16 @@ class MasterAutoPull {
    * @param out_recovered Set true when transitioning offline->online.
    */
   void onLivenessResponse(bool online, uint32_t now_ms, bool& out_recovered);
+  /**
+   * @brief Mark generic peer activity (any valid response from target peer).
+   *
+   * This keeps liveness freshness aligned with real link activity even when
+   * responses are telemetry/settings/control and not explicit liveness payloads.
+   *
+   * @param now_ms Current time.
+   * @param out_recovered Set true when transitioning offline->online.
+   */
+  void onPeerActivity(uint32_t now_ms, bool& out_recovered);
 
   /**
    * @brief Run one scheduler cycle and optionally send pull requests.
@@ -74,7 +84,14 @@ class MasterAutoPull {
                                 uint32_t& inout_corr_id);
 
  private:
+  void resetOfflineMissStreaks_();
   uint32_t livenessTimeoutMs() const;
+  void noteTxSuccess_();
+  void noteTxFailure_(uint32_t now_ms);
+  uint32_t txBackoffMs_() const;
+
+  static constexpr uint8_t kOfflineTimeoutMissThreshold = 2;
+  static constexpr uint8_t kOfflineStaleMissThreshold = 2;
 
   bool enabled_ = false;
   bool slave_online_ = false;
@@ -85,6 +102,11 @@ class MasterAutoPull {
   uint32_t last_liveness_req_ms_ = 0;
   uint32_t next_live_ms_ = 0;
   uint32_t next_telem_ms_ = 0;
+  uint8_t tx_fail_streak_ = 0;
+  uint32_t tx_backoff_until_ms_ = 0;
+  uint8_t offline_timeout_miss_streak_ = 0;
+  uint8_t offline_stale_miss_streak_ = 0;
+  uint32_t last_peer_activity_ms_ = 0;
 };
 
 }  // namespace espnow_link

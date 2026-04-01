@@ -272,6 +272,82 @@ bool parseTopologyTriggerPayload(const uint8_t* payload,
   return true;
 }
 
+bool buildTopologyTriggerBatchPayload(const TopologyTriggerBatchPayload& in,
+                                      std::vector<uint8_t>& out_payload) {
+  out_payload.clear();
+  if (in.items.empty() || in.items.size() > 255U) {
+    return false;
+  }
+
+  constexpr size_t kHeaderBytes = 14U;
+  constexpr size_t kItemBytes = 6U;
+  out_payload.reserve(kHeaderBytes + (in.items.size() * kItemBytes));
+  out_payload.push_back(kTopologyProtoId);
+  out_payload.push_back(kTopologyProtoVersion);
+  out_payload.push_back(kTopologyMsgTriggerBatch);
+  appendLe32(out_payload, in.topology_version);
+  appendLe16(out_payload, in.seq);
+  out_payload.push_back(in.src_role);
+  out_payload.push_back(in.src_vid);
+  out_payload.push_back(in.dst_role);
+  out_payload.push_back(in.direction);
+  out_payload.push_back(static_cast<uint8_t>(in.items.size()));
+  for (const auto& item : in.items) {
+    out_payload.push_back(item.dst_vid);
+    out_payload.push_back(static_cast<uint8_t>(item.target_index));
+    appendLe16(out_payload, item.delay_ms);
+    appendLe16(out_payload, item.hold_ms);
+  }
+  return true;
+}
+
+bool parseTopologyTriggerBatchPayload(const uint8_t* payload,
+                                      size_t len,
+                                      TopologyTriggerBatchPayload& out) {
+  out = TopologyTriggerBatchPayload{};
+  constexpr size_t kHeaderBytes = 14U;
+  constexpr size_t kItemBytes = 6U;
+  if (payload == nullptr || len < kHeaderBytes) {
+    return false;
+  }
+  if (payload[0] != kTopologyProtoId ||
+      payload[1] != kTopologyProtoVersion ||
+      payload[2] != kTopologyMsgTriggerBatch) {
+    return false;
+  }
+
+  out.topology_version = readLe32(payload + 3U);
+  out.seq = static_cast<uint16_t>(payload[7U]) |
+            (static_cast<uint16_t>(payload[8U]) << 8);
+  out.src_role = payload[9U];
+  out.src_vid = payload[10U];
+  out.dst_role = payload[11U];
+  out.direction = payload[12U];
+  const size_t item_count = payload[13U];
+  if (item_count == 0U) {
+    return false;
+  }
+  const size_t expected_len = kHeaderBytes + (item_count * kItemBytes);
+  if (len < expected_len) {
+    return false;
+  }
+
+  out.items.reserve(item_count);
+  size_t off = kHeaderBytes;
+  for (size_t i = 0U; i < item_count; ++i) {
+    TopologyTriggerBatchItem item{};
+    item.dst_vid = payload[off + 0U];
+    item.target_index = static_cast<int8_t>(payload[off + 1U]);
+    item.delay_ms = static_cast<uint16_t>(payload[off + 2U]) |
+                    (static_cast<uint16_t>(payload[off + 3U]) << 8);
+    item.hold_ms = static_cast<uint16_t>(payload[off + 4U]) |
+                   (static_cast<uint16_t>(payload[off + 5U]) << 8);
+    out.items.push_back(item);
+    off += kItemBytes;
+  }
+  return true;
+}
+
 bool buildTopologyTriggerAckPayload(const TopologyTriggerAckPayload& in,
                                     std::vector<uint8_t>& out_payload) {
   out_payload.clear();
@@ -360,6 +436,7 @@ bool classifyPullRequest(const uint8_t* payload, size_t len, uint8_t& out_servic
         out_op = 0x01;
         return true;
       case DescriptorQueryType::GetSettings:
+      case DescriptorQueryType::GetNodeBundle:
         out_service = 0x03;
         out_op = 0x05;
         return true;

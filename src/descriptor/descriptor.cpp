@@ -173,6 +173,7 @@ bool supportsPaging(DescriptorQueryType type) {
   return type == DescriptorQueryType::GetCapabilities ||
          type == DescriptorQueryType::GetTelemetry ||
          type == DescriptorQueryType::PullTelemetry ||
+         type == DescriptorQueryType::GetNodeBundle ||
          type == DescriptorQueryType::GetSettings ||
          type == DescriptorQueryType::GetOtaManifest;
 }
@@ -354,6 +355,11 @@ bool encodeDescriptorQuery(const DescriptorQuery& query, std::vector<uint8_t>& o
   }
   if (query.type == DescriptorQueryType::SetTime) {
     if (!appendU32(out_payload, 0x13, static_cast<uint32_t>(query.time_epoch_s & 0xFFFFFFFFULL))) {
+      return false;
+    }
+  }
+  if (query.type == DescriptorQueryType::GetNodeBundle) {
+    if (!appendU8(out_payload, 0x59, query.bundle_mask == 0U ? kNodeBundleMaskAll : query.bundle_mask)) {
       return false;
     }
   }
@@ -577,6 +583,8 @@ bool parseDescriptorQuery(const uint8_t* payload, size_t len, DescriptorQuery& o
       out.topology_hold_ms = hold;
     } else if (tag == 0x58 && type == 0x01 && tlv_len == 1) {
       out.topology_source_virtual_index = v[0];
+    } else if (tag == 0x59 && type == 0x01 && tlv_len == 1) {
+      out.bundle_mask = v[0];
     }
 
     off += tlv_len;
@@ -646,6 +654,14 @@ bool parseDescriptorQuery(const uint8_t* payload, size_t len, DescriptorQuery& o
     if (out.topology_source_virtual_index != 0xFFU &&
         out.topology_source_virtual_index > 0x0FU) {
       return false;
+    }
+  }
+  if (out.type == DescriptorQueryType::GetNodeBundle && out.bundle_mask == 0U) {
+    out.bundle_mask = kNodeBundleMaskAll;
+  } else if (out.type == DescriptorQueryType::GetNodeBundle) {
+    out.bundle_mask = static_cast<uint8_t>(out.bundle_mask & kNodeBundleMaskAll);
+    if (out.bundle_mask == 0U) {
+      out.bundle_mask = kNodeBundleMaskAll;
     }
   }
 
@@ -977,6 +993,170 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
         st.description = clipForPage(st.description, 56);
       }
       finalizePageMeta(query, total, end - start, snapshotSettings(full_settings, out.message), out);
+      return true;
+    }
+
+    case DescriptorQueryType::GetNodeBundle: {
+      const uint8_t bundle_mask = (query.bundle_mask == 0U) ? kNodeBundleMaskAll : query.bundle_mask;
+      out.type = DescriptorResponseType::NodeBundle;
+      out.bundle_mask = bundle_mask;
+      bool have_any = false;
+      auto append_issue = [&](const char* text) {
+        if (text == nullptr || text[0] == '\0') {
+          return;
+        }
+        if (!out.message.empty()) {
+          out.message += "; ";
+        }
+        out.message += text;
+      };
+
+      if ((bundle_mask & kNodeBundleMaskDevice) != 0U) {
+        if (provider.getDeviceDescriptor(out.device)) {
+          have_any = true;
+        } else {
+          append_issue("device unavailable");
+        }
+      }
+
+      if ((bundle_mask & kNodeBundleMaskLiveness) != 0U) {
+        if (provider.getLiveness(out.liveness)) {
+          have_any = true;
+        } else {
+          append_issue("liveness unavailable");
+        }
+      }
+
+      if ((bundle_mask & kNodeBundleMaskTime) != 0U) {
+        if (provider.getTime(out.time)) {
+          have_any = true;
+        } else {
+          append_issue("time unavailable");
+        }
+      }
+
+      if ((bundle_mask & kNodeBundleMaskSettings) != 0U) {
+        std::vector<SettingDescriptor> full_settings;
+
+        if (profile != nullptr) {
+          full_settings = descriptor_cache::settingsSchemaForProfile(profile);
+          bool have_provider_settings = false;
+          std::vector<SettingDescriptor> provider_settings;
+          const bool have_provider_bulk = provider.getSettings(provider_settings);
+
+          if (have_provider_bulk) {
+            std::unordered_map<uint16_t, const SettingDescriptor*> by_id{};
+            std::unordered_map<std::string, const SettingDescriptor*> by_key{};
+            by_id.reserve(provider_settings.size());
+            by_key.reserve(provider_settings.size());
+
+            for (const auto& s : provider_settings) {
+              if (s.setting_id != 0U) {
+                by_id.emplace(s.setting_id, &s);
+              }
+              if (!s.key.empty()) {
+                by_key.emplace(s.key, &s);
+              }
+            }
+
+            for (auto& st : full_settings) {
+              const uint16_t schema_setting_id = st.setting_id;
+              const std::string schema_setting_key = st.key;
+              const SettingDescriptor* resolved = nullptr;
+
+              if (schema_setting_id != 0U) {
+                auto it = by_id.find(schema_setting_id);
+                if (it != by_id.end()) {
+                  resolved = it->second;
+                }
+              }
+              if (resolved == nullptr && !schema_setting_key.empty()) {
+                auto it = by_key.find(schema_setting_key);
+                if (it != by_key.end()) {
+                  resolved = it->second;
+                }
+              }
+              if (resolved != nullptr) {
+                st = *resolved;
+                have_provider_settings = true;
+              }
+
+              st.setting_id = schema_setting_id;
+              st.key = schema_setting_key;
+            }
+          } else {
+            // Compatibility fallback for providers that only implement point lookups.
+            for (auto& st : full_settings) {
+              const uint16_t schema_setting_id = st.setting_id;
+              const std::string schema_setting_key = st.key;
+              SettingDescriptor resolved{};
+              if (provider.getSettingById(schema_setting_id, resolved)) {
+                st = resolved;
+                have_provider_settings = true;
+              }
+              st.setting_id = schema_setting_id;
+              st.key = schema_setting_key;
+            }
+          }
+
+          (void)have_provider_settings;
+        } else {
+          std::vector<SettingDescriptor> provider_settings;
+          const bool have_provider_settings = provider.getSettings(provider_settings);
+          if (have_provider_settings) {
+            full_settings = provider_settings;
+            for (auto& st : full_settings) {
+              backfillSettingId(st);
+            }
+          }
+        }
+
+        if (!full_settings.empty()) {
+          const uint16_t page_size = effectivePageSize(query);
+          if (page_size == 0U) {
+            out.settings = std::move(full_settings);
+          } else {
+            const size_t total = full_settings.size();
+            const size_t start = std::min<size_t>(query.cursor, total);
+            const size_t end = std::min<size_t>(total, start + page_size);
+            out.settings.assign(full_settings.begin() + static_cast<std::ptrdiff_t>(start),
+                                full_settings.begin() + static_cast<std::ptrdiff_t>(end));
+            for (auto& st : out.settings) {
+              st.key = clipForPage(st.key, 32);
+              st.nvs_key = clipForPage(st.nvs_key, 20);
+              st.current_value = clipForPage(st.current_value, 40);
+              st.default_value = clipForPage(st.default_value, 40);
+              st.description = clipForPage(st.description, 56);
+            }
+            finalizePageMeta(query, total, end - start, snapshotSettings(full_settings, out.message), out);
+          }
+          have_any = true;
+        } else {
+          append_issue("settings unavailable");
+        }
+      }
+
+      if ((bundle_mask & kNodeBundleMaskTelemetry) != 0U) {
+        std::vector<TelemetrySample> provider_samples;
+        if (provider.getTelemetrySnapshot(provider_samples)) {
+          out.telemetry_samples = alignSamplesToProfile(profile, provider_samples);
+          if (profile == nullptr) {
+            for (auto& s : out.telemetry_samples) {
+              backfillSampleMetricId(s);
+            }
+          }
+          have_any = true;
+        } else {
+          append_issue("telemetry unavailable");
+        }
+      }
+
+      if (!have_any) {
+        out.type = DescriptorResponseType::Error;
+        if (out.message.empty()) {
+          out.message = "bundle unavailable";
+        }
+      }
       return true;
     }
 
@@ -1373,6 +1553,12 @@ bool encodeDescriptorResponse(const DescriptorResponse& response, std::string& o
   if (!response.message.empty() && !tryAppendUtf8(0x11, response.message)) {
     return false;
   }
+  if (response.type == DescriptorResponseType::NodeBundle || response.bundle_mask != 0U) {
+    const uint8_t bundle_mask = (response.bundle_mask == 0U) ? kNodeBundleMaskAll : response.bundle_mask;
+    if (!tryAppendU8(0x59, bundle_mask)) {
+      return false;
+    }
+  }
 
   if (response.type == DescriptorResponseType::Device) {
     if (!tryAppendUtf8(0x20, response.device.device_type) || !tryAppendUtf8(0x21, response.device.device_id) ||
@@ -1450,6 +1636,80 @@ bool encodeDescriptorResponse(const DescriptorResponse& response, std::string& o
     if (!tryAppendU32(0x70, static_cast<uint32_t>(response.time.epoch_s & 0xFFFFFFFFULL)) ||
         !tryAppendU32(0x71, response.time.uptime_ms)) {
       return false;
+    }
+  } else if (response.type == DescriptorResponseType::NodeBundle) {
+    uint8_t bundle_mask = response.bundle_mask;
+    if (bundle_mask == 0U) {
+      bundle_mask = kNodeBundleMaskAll;
+    }
+    const bool include_device = (bundle_mask & kNodeBundleMaskDevice) != 0U;
+    const bool include_liveness = (bundle_mask & kNodeBundleMaskLiveness) != 0U;
+    const bool include_time = (bundle_mask & kNodeBundleMaskTime) != 0U;
+    const bool include_settings = (bundle_mask & kNodeBundleMaskSettings) != 0U;
+    const bool include_telemetry = (bundle_mask & kNodeBundleMaskTelemetry) != 0U;
+
+    if (include_device) {
+      if (!tryAppendUtf8(0x20, response.device.device_type) ||
+          !tryAppendUtf8(0x21, response.device.device_id) ||
+          !tryAppendUtf8(0x22, response.device.device_name) ||
+          !tryAppendUtf8(0x23, response.device.hw_version) ||
+          !tryAppendUtf8(0x24, response.device.sw_version) ||
+          !tryAppendUtf8(0x25, response.device.build_id)) {
+        return false;
+      }
+    }
+
+    if (include_liveness) {
+      if (!tryAppendBool(0x60, response.liveness.online) ||
+          !tryAppendU32(0x61, response.liveness.uptime_ms) ||
+          !tryAppendUtf8(0x62, response.liveness.state)) {
+        return false;
+      }
+    }
+
+    if (include_time) {
+      if (!tryAppendU32(0x70, static_cast<uint32_t>(response.time.epoch_s & 0xFFFFFFFFULL)) ||
+          !tryAppendU32(0x71, response.time.uptime_ms)) {
+        return false;
+      }
+    }
+
+    if (include_telemetry) {
+      for (const auto& t : response.telemetry_samples) {
+        const size_t need = 6 + (4 + t.key.size()) + (4 + t.value.size()) + (4 + t.unit.size());
+        if (!canFit(need)) {
+          truncated = true;
+          break;
+        }
+        if (!appendTlv(out, 0x4F, 0x02, reinterpret_cast<const uint8_t*>(&t.metric_id), 2) ||
+            !appendUtf8(out, 0x50, t.key) ||
+            !appendUtf8(out, 0x51, t.value) ||
+            !appendUtf8(out, 0x52, t.unit)) {
+          return false;
+        }
+      }
+    }
+
+    if (include_settings) {
+      for (const auto& st : response.settings) {
+        const size_t need = 6 + (4 + st.key.size()) + 5 + 5 + (4 + st.nvs_key.size()) +
+                            (4 + st.current_value.size()) + (4 + st.default_value.size()) + (4 + st.description.size());
+        if (!canFit(need)) {
+          truncated = true;
+          break;
+        }
+        if (!appendTlv(out, 0x7F, 0x02, reinterpret_cast<const uint8_t*>(&st.setting_id), 2) ||
+            !appendUtf8(out, 0x80, st.key) ||
+            !appendU8(out, 0x81, static_cast<uint8_t>(st.value_type)) ||
+            !appendBool(out, 0x82, st.writable) ||
+            !appendUtf8(out, 0x83, st.nvs_key) ||
+            !appendUtf8(out, 0x84, st.current_value) ||
+            !appendUtf8(out, 0x85, st.default_value) ||
+            !appendUtf8(out, 0x86, st.description)) {
+          return false;
+        }
+        ++paged_emitted_count;
+      }
     }
   } else if (response.type == DescriptorResponseType::Settings) {
     for (const auto& st : response.settings) {
@@ -1602,6 +1862,7 @@ bool encodeDescriptorResponse(const DescriptorResponse& response, std::string& o
     if (response.type == DescriptorResponseType::Capabilities ||
         response.type == DescriptorResponseType::Telemetry ||
         response.type == DescriptorResponseType::TelemetrySnapshot ||
+        response.type == DescriptorResponseType::NodeBundle ||
         response.type == DescriptorResponseType::Settings ||
         response.type == DescriptorResponseType::OtaManifest) {
       if (paged_emitted_count != response.returned_count) {
@@ -1730,6 +1991,8 @@ bool decodeDescriptorResponse(const uint8_t* payload, size_t len, DescriptorResp
       out.type = static_cast<DescriptorResponseType>(v[0]);
     } else if (tag == 0x11 && type == 0x09) {
       out.message.assign(reinterpret_cast<const char*>(v), reinterpret_cast<const char*>(v) + tlv_len);
+    } else if (tag == 0x59 && type == 0x01 && tlv_len == 1) {
+      out.bundle_mask = v[0];
     } else if (tag == 0x18 && type == 0x06 && tlv_len == 1) {
       out.is_paged = (v[0] != 0);
     } else if (tag == 0x19 && type == 0x03 && tlv_len == 4) {

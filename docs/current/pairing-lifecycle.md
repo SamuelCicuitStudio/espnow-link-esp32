@@ -21,6 +21,19 @@ Management commands:
 
 Pairing/unpairing completion is lifecycle/event driven (`CmdDone`/`CmdFail` and domain events).
 
+## Settings Cache Hydration Policy (Target)
+
+Library cache policy direction for paired slaves:
+
+1. On fresh pair success:
+   - schedule one settings bundle hydrate (`NodeBundleGet(settings)` path).
+2. On startup with already-paired peers:
+   - run startup reconcile hydration for peers with empty/partial cache.
+3. Keep refresh explicit:
+   - force pull only on user refresh or post-write authoritative sync.
+
+This avoids empty settings overlays after reboot and prevents repeated unsolicited pulls.
+
 ## Capacity Constraint
 
 Current master persisted pairing limit is 14 peers.

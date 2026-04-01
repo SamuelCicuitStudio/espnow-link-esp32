@@ -14,6 +14,7 @@ Scope rules:
 - `profiles-registry.md` for current profile key contracts and map surfaces
 - `telemetry.md` for pull/push command model and push validation limits
 - `descriptors-settings.md` for settings schema/get/set behavior
+- `frontend-api.md` for adapter/controller cache orchestration and operation tracking
 
 ## Document Index
 
@@ -33,3 +34,7 @@ Scope rules:
 - `examples-integration.md` - Library bootstrap and example integration
 
 Optimization docs are maintained separately under `docs/optimization`.
+
+For upcoming settings cache policy and delta-write migration, start with:
+
+- `../optimization/slave-settings-cache-policy-and-delta-write-fix-plan.md`

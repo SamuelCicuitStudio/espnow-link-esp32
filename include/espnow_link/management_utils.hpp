@@ -144,6 +144,12 @@ inline std::vector<uint8_t> buildSettingSetByIdPayload(uint16_t setting_id, cons
   return p;
 }
 
+/** @brief Build payload for `NodeBundleGet` command (single-byte field mask). */
+inline std::vector<uint8_t> buildNodeBundleGetPayload(uint8_t bundle_mask) {
+  const uint8_t mask = (bundle_mask == 0U) ? 0x1FU : bundle_mask;
+  return std::vector<uint8_t>{mask};
+}
+
 /** @brief Build payload for `TimeSet` command. */
 inline std::vector<uint8_t> buildTimeSetPayload(uint64_t epoch_s) {
   std::vector<uint8_t> p;
@@ -382,6 +388,19 @@ inline bool parseStringPayloadU16(const std::vector<uint8_t>& payload, std::stri
   return true;
 }
 
+/** @brief Parse payload for `NodeBundleGet` command. */
+inline bool parseNodeBundleGetPayload(const std::vector<uint8_t>& payload, uint8_t& out_bundle_mask) {
+  out_bundle_mask = 0x1FU;
+  if (payload.empty()) {
+    return true;
+  }
+  if (payload.size() != 1U) {
+    return false;
+  }
+  out_bundle_mask = (payload[0] == 0U) ? 0x1FU : payload[0];
+  return true;
+}
+
 /** @brief Parse logger status payload returned by management service. */
 inline bool parseLogStatusPayload(const std::vector<uint8_t>& payload,
                                   bool& out_available,
@@ -502,9 +521,88 @@ inline bool parsePeerListPayload(const std::vector<uint8_t>& payload, std::vecto
   return true;
 }
 
+inline bool parseDiscoverySnapshotPayloadDetailed(const std::vector<uint8_t>& payload,
+                                                  std::vector<ManagementDiscoveredPeerInfo>& out);
+
+/**
+ * @brief Parse payload from `DiscoverySnapshotGet` response with per-peer freshness metadata.
+ *
+ * Legacy payloads (`<count:u8><mac:6>*`) are accepted and return peers with metadata flags unset.
+ * Extended payloads append a trailing metadata block:
+ * `<tag:u8=0xD5><ver:u8=1><count:u8><entry_size:u8=4><entry>*`
+ * where each entry is `<flags:u8><rssi_s8:u8><age_s_le:u16>`.
+ */
+inline bool parseDiscoverySnapshotPayloadDetailed(const std::vector<uint8_t>& payload,
+                                                  std::vector<ManagementDiscoveredPeerInfo>& out) {
+  out.clear();
+  if (payload.empty()) return false;
+
+  const size_t count = static_cast<size_t>(payload[0]);
+  size_t off = 1U;
+  out.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    if (payload.size() < (off + 6U)) break;
+    ManagementDiscoveredPeerInfo entry{};
+    std::memcpy(entry.peer.data(), payload.data() + off, 6U);
+    off += 6U;
+    out.push_back(entry);
+  }
+
+  const size_t parsed = out.size();
+  const size_t legacy_bytes = 1U + (parsed * 6U);
+  if (payload.size() <= legacy_bytes + 3U) {
+    return true;
+  }
+
+  constexpr uint8_t kMetaTag = 0xD5U;
+  constexpr uint8_t kMetaVersion = 1U;
+  constexpr size_t kEntrySizeMin = 4U;
+  const size_t meta_off = legacy_bytes;
+  if (payload[meta_off] != kMetaTag || payload[meta_off + 1U] != kMetaVersion) {
+    return true;
+  }
+
+  const size_t meta_count = static_cast<size_t>(payload[meta_off + 2U]);
+  const size_t entry_size = static_cast<size_t>(payload[meta_off + 3U]);
+  if (meta_count != parsed || entry_size < kEntrySizeMin) {
+    return true;
+  }
+  const size_t meta_bytes = 4U + (meta_count * entry_size);
+  if (payload.size() < (meta_off + meta_bytes)) {
+    return true;
+  }
+
+  size_t entry_off = meta_off + 4U;
+  for (size_t i = 0; i < parsed; ++i) {
+    const uint8_t flags = payload[entry_off];
+    if ((flags & 0x01U) != 0U) {
+      out[i].has_rssi = true;
+      out[i].rssi = static_cast<int16_t>(static_cast<int8_t>(payload[entry_off + 1U]));
+    }
+    if ((flags & 0x02U) != 0U) {
+      uint16_t age_s = 0U;
+      if (readU16Le(payload.data() + entry_off + 2U, payload.size() - (entry_off + 2U), age_s)) {
+        out[i].has_last_seen_age_ms = true;
+        out[i].last_seen_age_ms = static_cast<uint32_t>(age_s) * 1000U;
+      }
+    }
+    entry_off += entry_size;
+  }
+  return true;
+}
+
 /** @brief Parse payload from `DiscoverySnapshotGet` response. */
 inline bool parseDiscoverySnapshotPayload(const std::vector<uint8_t>& payload, std::vector<MacAddress>& out) {
-  return parsePeerListPayload(payload, out);
+  out.clear();
+  std::vector<ManagementDiscoveredPeerInfo> detailed{};
+  if (!parseDiscoverySnapshotPayloadDetailed(payload, detailed)) {
+    return false;
+  }
+  out.reserve(detailed.size());
+  for (const auto& entry : detailed) {
+    out.push_back(entry.peer);
+  }
+  return true;
 }
 
 /** @brief Parse payload from `PairedSnapshotGet` response (`pair_seq` ordered list with role hints). */
@@ -871,6 +969,7 @@ inline bool parseDiscoveryUpdatePayload(const std::vector<uint8_t>& payload,
   const uint16_t raw = static_cast<uint16_t>(payload[6U]) |
                        (static_cast<uint16_t>(payload[7U]) << 8);
   out.rssi = static_cast<int16_t>(raw);
+  out.has_rssi = (out.rssi != 0);
 
   if (payload.size() < 9U) {
     return true;
@@ -885,6 +984,14 @@ inline bool parseDiscoveryUpdatePayload(const std::vector<uint8_t>& payload,
   const size_t role_off = name_off + static_cast<size_t>(name_len);
   if (payload.size() > role_off) {
     out.role_code = payload[role_off];
+  }
+  const size_t age_off = role_off + ((payload.size() > role_off) ? 1U : 0U);
+  if (payload.size() >= (age_off + 2U)) {
+    uint16_t age_s = 0U;
+    if (readU16Le(payload.data() + age_off, payload.size() - age_off, age_s)) {
+      out.has_last_seen_age_ms = true;
+      out.last_seen_age_ms = static_cast<uint32_t>(age_s) * 1000U;
+    }
   }
   return true;
 }

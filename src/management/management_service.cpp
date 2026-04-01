@@ -12,13 +12,15 @@
 #include "espnow_link/ota_paths.hpp"
 #include "espnow_link/profile.hpp"
 #include "espnow_link/ota_types.hpp"
+#include "espnow_link/address.hpp"
 
 namespace espnow_link {
 
 namespace {
 
 constexpr uint32_t kDefaultDiscoveryWindowMs = 10000;
-constexpr size_t kMaxPairedSlaves = 14;
+constexpr size_t kMaxPairedSlaves = 15;
+constexpr size_t kPendingDescriptorPullsMax = 32U;
 constexpr uint8_t kLiveMonitorMetaSlot = 0x31;
 constexpr uint8_t kLiveMonitorMetaVersion = 1;
 constexpr uint8_t kChainLoopMetaSlot = 0x32;
@@ -57,6 +59,12 @@ constexpr uint16_t kLogEvtTimeout = 0x0004;
 constexpr uint16_t kLogEvtQueueFull = 0x0005;
 constexpr uint16_t kOtaBootCompleteEventId = 0x7F10;
 constexpr uint16_t kOtaTransferReadyEventId = 0x7F11;
+constexpr uint8_t kTopologyStageStepNone = 0U;
+constexpr uint8_t kTopologyStageStepWaitClearAck = 1U;
+constexpr uint8_t kTopologyStageStepWaitBeginAck = 2U;
+constexpr uint8_t kTopologyStageStepWaitGroupAck = 3U;
+constexpr uint8_t kTopologyStageStepWaitSlotAck = 4U;
+constexpr uint8_t kTopologyStageStepWaitFinalizeAck = 5U;
 
 bool isZeroMacAddress(const MacAddress& mac) {
   for (uint8_t b : mac) {
@@ -112,6 +120,104 @@ uint32_t liveProbeTriggerAgeMs() {
 
 uint32_t liveProbeUrgencyAgeMs() {
   return (kLiveOfflineDetectMaxMs > kLiveProbeUrgencyWindowMs) ? (kLiveOfflineDetectMaxMs - kLiveProbeUrgencyWindowMs) : 0U;
+}
+
+void mergeCoverageRange_(std::vector<std::pair<uint16_t, uint16_t>>& ranges,
+                         uint16_t start,
+                         uint16_t end) {
+  if (end <= start) {
+    return;
+  }
+  ranges.emplace_back(start, end);
+  std::sort(ranges.begin(), ranges.end(), [](const std::pair<uint16_t, uint16_t>& a,
+                                             const std::pair<uint16_t, uint16_t>& b) {
+    if (a.first == b.first) {
+      return a.second < b.second;
+    }
+    return a.first < b.first;
+  });
+  size_t out = 0U;
+  for (const auto& r : ranges) {
+    if (out == 0U) {
+      ranges[out++] = r;
+      continue;
+    }
+    auto& last = ranges[out - 1U];
+    if (r.first <= last.second) {
+      if (r.second > last.second) {
+        last.second = r.second;
+      }
+    } else {
+      ranges[out++] = r;
+    }
+  }
+  ranges.resize(out);
+}
+
+uint16_t contiguousCoverageFromZero_(const std::vector<std::pair<uint16_t, uint16_t>>& ranges) {
+  uint16_t covered = 0U;
+  for (const auto& r : ranges) {
+    if (r.first > covered) {
+      break;
+    }
+    if (r.second > covered) {
+      covered = r.second;
+    }
+  }
+  return covered;
+}
+
+ManagementStatus topologyDescriptorErrorToStatus_(const std::string& message) {
+  const std::string err = management_utils::lowerAscii(management_utils::trim(message));
+  if (err.empty()) {
+    return ManagementStatus::InternalError;
+  }
+  if (err == "topology_not_staged") {
+    return ManagementStatus::TopologyNotStaged;
+  }
+  if (err == "topology_version_stale" || err == "topology stale") {
+    return ManagementStatus::TopologyVersionStale;
+  }
+  if (err == "topology_apply_failed" ||
+      err == "topology stage failed" ||
+      err == "topology commit failed" ||
+      err == "topology stage not active" ||
+      err == "topology_stage_not_active") {
+    return ManagementStatus::TopologyApplyFailed;
+  }
+  if (err == "topology source unauthorized" ||
+      err == "topology_source_unauthorized" ||
+      err == "source unauthorized") {
+    return ManagementStatus::DeniedByRole;
+  }
+  if (management_utils::startsWith(err, "invalid_") ||
+      management_utils::startsWith(err, "invalid ") ||
+      err == "out_of_window" ||
+      err == "index_unmapped" ||
+      err == "duplicate_logical_peer" ||
+      err == "duplicate_relative_index" ||
+      err == "group_id_missing") {
+    return ManagementStatus::BadPayload;
+  }
+  if (err == "pull request unsupported" ||
+      err == "topology unsupported query" ||
+      err == "unsupported") {
+    return ManagementStatus::UnsupportedCommand;
+  }
+  return ManagementStatus::InternalError;
+}
+
+ManagementStatus descriptorErrorToStatus_(ManagementCommandId cmd,
+                                          const std::string& message) {
+  switch (cmd) {
+    case ManagementCommandId::TopologyStageSet:
+    case ManagementCommandId::TopologyCommit:
+    case ManagementCommandId::TopologyStatusGet:
+    case ManagementCommandId::TopologySlotsGet:
+      return topologyDescriptorErrorToStatus_(message);
+    default:
+      return ManagementStatus::InternalError;
+  }
 }
 
 struct SettingGetArgs {
@@ -1093,6 +1199,7 @@ ManagementAccessLevel requiredAccessLevel(ManagementCommandId cmd) {
     case ManagementCommandId::DescGet:
     case ManagementCommandId::CapsGet:
     case ManagementCommandId::CapsPageGet:
+    case ManagementCommandId::NodeBundleGet:
     case ManagementCommandId::SettingsGet:
     case ManagementCommandId::SettingsPageGet:
     case ManagementCommandId::SettingGet:
@@ -1314,6 +1421,7 @@ bool ManagementService::submit(const ManagementRequest& request) {
 void ManagementService::tick(uint32_t now_ms) {
   std::lock_guard<std::recursive_mutex> lk(state_mx_);
   now_ms_ = now_ms;
+  prunePendingDescriptorPulls_();
   if (discovery_active_ && static_cast<int32_t>(now_ms_ - discovery_deadline_ms_) >= 0) {
     discovery_active_ = false;
     manager_.setDiscoveryRxEnabled(false);
@@ -1386,7 +1494,9 @@ void ManagementService::tick(uint32_t now_ms) {
     }
   }
 
-  const bool async_terminal = isAsyncTerminalCommand(p.request.cmd_id);
+  const bool async_terminal =
+      isAsyncTerminalCommand(p.request.cmd_id) ||
+      hasPendingDescriptorPullRequest_(p.request.source, p.request.req_id);
   if (response_status == ManagementStatus::OkDeferred && async_terminal) {
     // Deferred commands publish terminal lifecycle later from async completion path.
   } else if (!has_response || response_status == ManagementStatus::Ok ||
@@ -1450,6 +1560,8 @@ void ManagementService::clearQueues() {
   channel_sync_all_ = ChannelSyncAllSession{};
   chain_loop_all_ = ChainLoopAllSession{};
   deferred_lifecycle_commands_.clear();
+  pending_descriptor_pulls_.clear();
+  deferred_topology_commits_.clear();
 }
 
 size_t ManagementService::pendingRequestCount() const {
@@ -1463,6 +1575,38 @@ size_t ManagementService::pendingResponseCount() const {
 size_t ManagementService::pendingEventCount() const {
   std::lock_guard<std::recursive_mutex> lk(state_mx_);
   return event_queue_.size();
+}
+
+bool ManagementService::topologyBusy() const {
+  std::lock_guard<std::recursive_mutex> lk(state_mx_);
+  const auto is_topology_cmd = [](uint16_t cmd_id) {
+    const ManagementCommandId cmd = static_cast<ManagementCommandId>(cmd_id);
+    switch (cmd) {
+      case ManagementCommandId::TopologyStageSet:
+      case ManagementCommandId::TopologyCommit:
+      case ManagementCommandId::TopologyStatusGet:
+      case ManagementCommandId::TopologySlotsGet:
+      case ManagementCommandId::TopologyTriggerSend:
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  for (const auto& pending : request_queue_) {
+    if (is_topology_cmd(pending.request.cmd_id)) {
+      return true;
+    }
+  }
+  for (const auto& pending : pending_descriptor_pulls_) {
+    if (is_topology_cmd(pending.cmd_id)) {
+      return true;
+    }
+  }
+  if (!deferred_topology_commits_.empty()) {
+    return true;
+  }
+  return false;
 }
 
 bool ManagementService::beginRadioTransition(const RadioTransitionBeginOptions& options) {
@@ -1812,13 +1956,28 @@ void ManagementService::markRadioTransitionError(ManagementStatus status,
 bool ManagementService::executeRequest(const ManagementRequest& request) {
   const ManagementCommandId cmd = static_cast<ManagementCommandId>(request.cmd_id);
   auto topologyErrorToStatus = [](const std::string& error) {
-    if (error == "topology_not_staged") return ManagementStatus::TopologyNotStaged;
-    if (error == "topology_version_stale") return ManagementStatus::TopologyVersionStale;
-    if (error == "topology_apply_failed") return ManagementStatus::TopologyApplyFailed;
-    if (management_utils::startsWith(error, "invalid_") ||
-        error == "group_id_missing" ||
-        error == "duplicate_logical_peer" ||
-        error == "duplicate_relative_index") {
+    const std::string e = management_utils::lowerAscii(management_utils::trim(error));
+    if (e == "topology_not_staged") return ManagementStatus::TopologyNotStaged;
+    if (e == "topology_version_stale") return ManagementStatus::TopologyVersionStale;
+    if (e == "topology_apply_failed" ||
+        e == "topology stage failed" ||
+        e == "topology commit failed" ||
+        e == "topology stage not active" ||
+        e == "topology_stage_not_active") {
+      return ManagementStatus::TopologyApplyFailed;
+    }
+    if (e == "topology source unauthorized" ||
+        e == "topology_source_unauthorized" ||
+        e == "source unauthorized") {
+      return ManagementStatus::DeniedByRole;
+    }
+    if (management_utils::startsWith(e, "invalid_") ||
+        management_utils::startsWith(e, "invalid ") ||
+        e == "group_id_missing" ||
+        e == "duplicate_logical_peer" ||
+        e == "duplicate_relative_index" ||
+        e == "out_of_window" ||
+        e == "index_unmapped") {
       return ManagementStatus::BadPayload;
     }
     return ManagementStatus::InternalError;
@@ -2306,7 +2465,7 @@ bool ManagementService::executeRequest(const ManagementRequest& request) {
       return true;
     }
 
-    if (manager_.persistedPairCount() >= 14U) {
+    if (manager_.persistedPairCount() >= kMaxPairedSlaves) {
       queueResponse(request.source,
                     request.cmd_id,
                     request.req_id,
@@ -2577,9 +2736,52 @@ bool ManagementService::buildDiscoverySnapshotPayload(std::vector<uint8_t>& out_
   out_payload.clear();
   std::vector<MacAddress> peers;
   manager_.getDiscoveredPeers(peers);
-  appendU8(out_payload, static_cast<uint8_t>(std::min<size_t>(peers.size(), 255)));
-  for (size_t i = 0; i < peers.size() && i < 255; ++i) {
+  const size_t count = std::min<size_t>(peers.size(), 255U);
+  appendU8(out_payload, static_cast<uint8_t>(count));
+  for (size_t i = 0; i < count; ++i) {
     out_payload.insert(out_payload.end(), peers[i].begin(), peers[i].end());
+  }
+  if (count == 0U) {
+    return true;
+  }
+
+  std::vector<PeerRecord> registry{};
+  manager_.getPeerRegistrySnapshot(registry);
+
+  constexpr uint8_t kSnapshotMetaTag = 0xD5U;
+  constexpr uint8_t kSnapshotMetaVersion = 1U;
+  constexpr uint8_t kSnapshotMetaEntrySize = 4U;  // flags:u8 + rssi_s8:u8 + age_s:u16
+  appendU8(out_payload, kSnapshotMetaTag);
+  appendU8(out_payload, kSnapshotMetaVersion);
+  appendU8(out_payload, static_cast<uint8_t>(count));
+  appendU8(out_payload, kSnapshotMetaEntrySize);
+
+  for (size_t i = 0; i < count; ++i) {
+    uint8_t flags = 0U;
+    int8_t rssi_s8 = 0;
+    uint16_t age_s = 0U;
+
+    const auto it = std::find_if(registry.begin(),
+                                 registry.end(),
+                                 [&](const PeerRecord& rec) { return rec.mac == peers[i]; });
+    if (it != registry.end()) {
+      if (it->last_rssi != 0) {
+        const int rssi_i = static_cast<int>(it->last_rssi);
+        const int clamped = std::max(-127, std::min(127, rssi_i));
+        rssi_s8 = static_cast<int8_t>(clamped);
+        flags |= 0x01U;
+      }
+      if (it->last_seen_ms != 0U) {
+        const uint32_t age_ms = (now_ms_ >= it->last_seen_ms) ? (now_ms_ - it->last_seen_ms) : 0U;
+        const uint32_t age_s_u32 = age_ms / 1000U;
+        age_s = static_cast<uint16_t>(std::min<uint32_t>(age_s_u32, 0xFFFFU));
+        flags |= 0x02U;
+      }
+    }
+
+    appendU8(out_payload, flags);
+    appendU8(out_payload, static_cast<uint8_t>(rssi_s8));
+    appendU16(out_payload, age_s);
   }
   return true;
 }
@@ -2898,19 +3100,34 @@ void ManagementService::pumpChannelSyncAll() {
   stopChannelSyncAll(applied, applied ? ManagementStatus::Ok : ManagementStatus::InternalError);
 }
 
-bool ManagementService::buildChainLoopTargetPeers(std::vector<MacAddress>& out_peers) const {
+bool ManagementService::buildChainLoopTargetPeers(std::vector<MacAddress>& out_peers) {
   out_peers.clear();
   EspNowManager::TopologySnapshot snapshot{};
-  if (!manager_.getTopologySnapshot(EspNowManager::TopologyState::Committed, snapshot)) {
+  if (manager_.getTopologySnapshot(EspNowManager::TopologyState::Committed, snapshot)) {
+    for (const auto& slot : snapshot.slots) {
+      if (!slot.enabled || !isChainRoleCode(slot.peer_role)) {
+        continue;
+      }
+      if (std::find(out_peers.begin(), out_peers.end(), slot.peer) == out_peers.end()) {
+        out_peers.push_back(slot.peer);
+      }
+    }
+  }
+
+  if (!out_peers.empty()) {
     return true;
   }
 
-  for (const auto& slot : snapshot.slots) {
-    if (!slot.enabled || !isChainRoleCode(slot.peer_role)) {
+  // Fallback for chain JSON deploy flow: ICM may not have a local committed topology
+  // snapshot, so derive targets from persisted paired peers.
+  std::vector<EspNowManager::PersistedPeerRoleEntry> persisted_peers{};
+  manager_.getPersistedPeersWithRole(persisted_peers);
+  for (const auto& entry : persisted_peers) {
+    if (entry.role_code != 0U && !isChainRoleCode(entry.role_code)) {
       continue;
     }
-    if (std::find(out_peers.begin(), out_peers.end(), slot.peer) == out_peers.end()) {
-      out_peers.push_back(slot.peer);
+    if (std::find(out_peers.begin(), out_peers.end(), entry.peer) == out_peers.end()) {
+      out_peers.push_back(entry.peer);
     }
   }
   return true;
@@ -3252,6 +3469,85 @@ bool ManagementService::hasPendingTargetRequest(const MacAddress& peer) const {
   return false;
 }
 
+uint32_t ManagementService::allocateInternalCorrelation_() {
+  uint32_t corr = next_internal_corr_id_;
+  if (corr == 0U || corr < 0x80000000U) {
+    corr = 0x80000000U;
+  }
+  next_internal_corr_id_ = corr + 1U;
+  if (next_internal_corr_id_ == 0U || next_internal_corr_id_ < 0x80000000U) {
+    next_internal_corr_id_ = 0x80000000U;
+  }
+  return corr;
+}
+
+bool ManagementService::hasPendingDescriptorPullRequest_(ManagementSource source, uint32_t req_id) const {
+  if (req_id == 0U) {
+    return false;
+  }
+  for (const auto& pending : pending_descriptor_pulls_) {
+    if (source != ManagementSource::Unknown && pending.source != source) {
+      continue;
+    }
+    if (pending.req_id == req_id) {
+      return true;
+    }
+    if (pending.wait_topology_stage_done) {
+      if (pending.corr_last == req_id) {
+        return true;
+      }
+      continue;
+    }
+    const uint32_t corr_first = (pending.corr_first == 0U) ? pending.req_id : pending.corr_first;
+    const uint32_t corr_last = (pending.corr_last == 0U) ? pending.req_id : pending.corr_last;
+    if (req_id >= corr_first && req_id <= corr_last) {
+      return true;
+    }
+  }
+  for (const auto& deferred : deferred_topology_commits_) {
+    if (deferred.req_id == req_id &&
+        (source == ManagementSource::Unknown || deferred.source == source)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const ManagementService::PendingDescriptorPull* ManagementService::findPendingDescriptorPullByCorrelation_(
+    const MacAddress& peer,
+    uint32_t req_id) const {
+  if (req_id == 0U) {
+    return nullptr;
+  }
+  for (const auto& pending : pending_descriptor_pulls_) {
+    if (pending.peer != peer) {
+      continue;
+    }
+    if (pending.wait_topology_stage_done) {
+      if (pending.corr_last == req_id) {
+        return &pending;
+      }
+      continue;
+    }
+    const uint32_t corr_first = (pending.corr_first == 0U) ? pending.req_id : pending.corr_first;
+    const uint32_t corr_last = (pending.corr_last == 0U) ? pending.req_id : pending.corr_last;
+    if (req_id >= corr_first && req_id <= corr_last) {
+      return &pending;
+    }
+  }
+  return nullptr;
+}
+
+bool ManagementService::hasPendingTopologyStageForPeer_(const MacAddress& peer) const {
+  for (const auto& pending : pending_descriptor_pulls_) {
+    if (pending.peer == peer &&
+        pending.cmd_id == static_cast<uint16_t>(ManagementCommandId::TopologyStageSet)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool ManagementService::isCriticalLiveMonitorCommand(uint16_t cmd_id) const {
   const ManagementCommandId cmd = static_cast<ManagementCommandId>(cmd_id);
   switch (cmd) {
@@ -3437,14 +3733,54 @@ bool ManagementService::runDescriptorPull(const ManagementRequest& request, uint
     queueResponse(request.source, request.cmd_id, request.req_id, ManagementStatus::UnsupportedCommand);
     return true;
   }
+  const ManagementCommandId command = static_cast<ManagementCommandId>(cmd_id);
+  const bool should_track_pull_candidate =
+      (command == ManagementCommandId::NodeBundleGet ||
+       command == ManagementCommandId::TopologyStageSet ||
+       command == ManagementCommandId::TopologyStatusGet ||
+       command == ManagementCommandId::TopologyCommit ||
+       request.source != ManagementSource::Cli);
   MacAddress peer{};
   PeerResolveContext peer_ctx{};
   if (!requirePairedPeer(request, peer, &peer_ctx)) return true;
   auto peerResponse = [&](ManagementStatus status) {
     queueResponse(request.source, request.cmd_id, request.req_id, status, {}, &peer_ctx);
   };
+  if (should_track_pull_candidate && request.req_id != 0U) {
+    const PendingDescriptorPull* existing =
+        findPendingDescriptorPullByCorrelation_(peer, request.req_id);
+    if (existing != nullptr) {
+      if (command == ManagementCommandId::TopologyCommit &&
+          existing->cmd_id == static_cast<uint16_t>(ManagementCommandId::TopologyStageSet)) {
+        // Allow commit enqueue while stage session is in-flight; commit will
+        // be deferred until stage reaches terminal state for this peer.
+      } else if (existing->source == request.source && existing->cmd_id == request.cmd_id) {
+        // Idempotent retry: keep original in-flight pull and return deferred ack.
+        queueResponse(request.source,
+                      request.cmd_id,
+                      request.req_id,
+                      ManagementStatus::OkDeferred,
+                      {},
+                      &peer_ctx);
+      } else {
+        // Prevent ambiguous correlation ownership across source/command collisions.
+        peerResponse(ManagementStatus::QueueFull);
+      }
+      return true;
+    }
+    if (pending_descriptor_pulls_.size() >= kPendingDescriptorPullsMax) {
+      peerResponse(ManagementStatus::QueueFull);
+      return true;
+    }
+  }
 
   bool sent = false;
+  bool stage_flow = false;
+  uint32_t stage_corr_first = 0U;
+  uint32_t stage_corr_last = 0U;
+  uint32_t stage_finalize_corr = 0U;
+  ManagementTopologySnapshotPayload topology_stage_snapshot{};
+  bool has_topology_stage_snapshot = false;
   switch (static_cast<ManagementCommandId>(cmd_id)) {
     case ManagementCommandId::DescGet:
       sent = pull_->requestDevice(peer, request.req_id);
@@ -3459,6 +3795,15 @@ bool ManagementService::runDescriptorPull(const ManagementRequest& request, uint
         return true;
       }
       sent = pull_->requestCapabilitiesPage(peer, args.cursor, args.page_size, request.req_id);
+      break;
+    }
+    case ManagementCommandId::NodeBundleGet: {
+      uint8_t bundle_mask = 0x1FU;
+      if (!management_utils::parseNodeBundleGetPayload(request.payload, bundle_mask)) {
+        peerResponse(ManagementStatus::BadPayload);
+        return true;
+      }
+      sent = pull_->requestNodeBundle(peer, bundle_mask, request.req_id);
       break;
     }
     case ManagementCommandId::SettingsGet:
@@ -3742,31 +4087,69 @@ bool ManagementService::runDescriptorPull(const ManagementRequest& request, uint
       sent = pull_->requestTopologyStatus(peer, request.req_id);
       break;
     case ManagementCommandId::TopologyStageSet: {
+      if (hasPendingTopologyStageForPeer_(peer)) {
+        peerResponse(ManagementStatus::QueueFull);
+        return true;
+      }
       ManagementTopologySnapshotPayload stage_payload{};
       if (!management_utils::parseTopologyStagePayload(request.payload, stage_payload)) {
         peerResponse(ManagementStatus::BadPayload);
         return true;
       }
-      uint32_t corr = request.req_id;
-      sent = pull_->requestTopologyStageClear(peer, corr++);
-      sent = sent && pull_->requestTopologyStageBegin(peer,
-                                                      stage_payload.schema_version,
-                                                      stage_payload.topology_version,
-                                                      stage_payload.index_neg,
-                                                      stage_payload.index_pos,
-                                                      corr++);
-      for (const auto& group : stage_payload.groups) {
-        sent = sent && pull_->requestTopologyStageGroupSet(peer, group, corr++);
+      topology_stage_snapshot = stage_payload;
+      has_topology_stage_snapshot = true;
+      uint32_t corr = allocateInternalCorrelation_();
+      if (corr == 0U) {
+        corr = (request.req_id == 0U) ? 1U : request.req_id;
       }
-      for (const auto& slot : stage_payload.slots) {
-        sent = sent && pull_->requestTopologyStageSlotSet(peer, slot, corr++);
-      }
-      sent = sent && pull_->requestTopologyStageFinalize(peer, corr++);
+      stage_flow = true;
+      stage_corr_first = corr;
+      // Ack-paced stage flow:
+      // send clear first, then advance one command per descriptor ack in onPullResponse().
+      sent = pull_->requestTopologyStageClear(peer, corr);
+      stage_corr_last = corr;
+      stage_finalize_corr = 0U;
       break;
     }
-    case ManagementCommandId::TopologyCommit:
+    case ManagementCommandId::TopologyCommit: {
+      if (hasPendingTopologyStageForPeer_(peer)) {
+        bool duplicate = false;
+        for (const auto& pending_commit : deferred_topology_commits_) {
+          if (pending_commit.req_id == request.req_id &&
+              pending_commit.source == request.source &&
+              pending_commit.peer == peer) {
+            duplicate = true;
+            break;
+          }
+        }
+        if (!duplicate) {
+          PendingDeferredTopologyCommit deferred{};
+          deferred.req_id = request.req_id;
+          deferred.cmd_id = request.cmd_id;
+          deferred.source = request.source;
+          deferred.peer = peer;
+          deferred.peer_ctx = peer_ctx;
+          uint32_t timeout_ms = request.timeout_ms;
+          if (timeout_ms == 0U) {
+            timeout_ms = commandTimeoutMs(request.cmd_id);
+          }
+          if (timeout_ms == 0U) {
+            timeout_ms = 1500U;
+          }
+          deferred.deadline_ms = now_ms_ + timeout_ms;
+          deferred_topology_commits_.push_back(std::move(deferred));
+        }
+        queueResponse(request.source,
+                      request.cmd_id,
+                      request.req_id,
+                      ManagementStatus::OkDeferred,
+                      {},
+                      &peer_ctx);
+        return true;
+      }
       sent = pull_->requestTopologyCommit(peer, request.req_id);
       break;
+    }
     case ManagementCommandId::TopologyTriggerSend: {
       ManagementTopologyTriggerSendPayload trigger_payload{};
       if (!management_utils::parseTopologyTriggerSendPayload(request.payload, trigger_payload)) {
@@ -3786,8 +4169,21 @@ bool ManagementService::runDescriptorPull(const ManagementRequest& request, uint
       peerResponse(ManagementStatus::UnsupportedCommand);
       return true;
   }
-  const ManagementCommandId command = static_cast<ManagementCommandId>(cmd_id);
-  const bool deferred = isDescriptorMutationCommand(command);
+  const bool should_track_pull = sent && should_track_pull_candidate;
+  if (should_track_pull) {
+    const uint32_t corr_first = stage_flow ? stage_corr_first : request.req_id;
+    const uint32_t corr_last = stage_flow ? stage_corr_last : request.req_id;
+    const uint32_t finalize_corr = stage_flow ? stage_finalize_corr : 0U;
+    trackPendingDescriptorPull_(request,
+                                peer_ctx,
+                                peer,
+                                corr_first,
+                                corr_last,
+                                stage_flow,
+                                finalize_corr,
+                                has_topology_stage_snapshot ? &topology_stage_snapshot : nullptr);
+  }
+  const bool deferred = isDescriptorMutationCommand(command) || should_track_pull;
   queueResponse(request.source,
                 request.cmd_id,
                 request.req_id,
@@ -3796,6 +4192,171 @@ bool ManagementService::runDescriptorPull(const ManagementRequest& request, uint
                 {},
                 &peer_ctx);
   return true;
+}
+
+void ManagementService::trackPendingDescriptorPull_(const ManagementRequest& request,
+                                                    const PeerResolveContext& peer_ctx,
+                                                    const MacAddress& peer,
+                                                    uint32_t corr_first,
+                                                    uint32_t corr_last,
+                                                    bool wait_topology_stage_done,
+                                                    uint32_t topology_stage_finalize_corr,
+                                                    const ManagementTopologySnapshotPayload* topology_stage_snapshot) {
+  if (request.req_id == 0U) {
+    return;
+  }
+  PendingDescriptorPull pending{};
+  pending.req_id = request.req_id;
+  pending.cmd_id = request.cmd_id;
+  pending.source = request.source;
+  pending.peer = peer;
+  pending.peer_ctx = peer_ctx;
+  pending.corr_first = (corr_first == 0U) ? request.req_id : corr_first;
+  pending.corr_last = (corr_last == 0U) ? pending.corr_first : corr_last;
+  if (pending.corr_last < pending.corr_first) {
+    pending.corr_last = pending.corr_first;
+  }
+  pending.wait_node_bundle_done =
+      (static_cast<ManagementCommandId>(request.cmd_id) == ManagementCommandId::NodeBundleGet);
+  pending.wait_node_bundle_strict_done = false;
+  pending.wait_topology_stage_done = wait_topology_stage_done;
+  pending.topology_stage_step = kTopologyStageStepNone;
+  pending.topology_stage_group_cursor = 0U;
+  pending.topology_stage_slot_cursor = 0U;
+  pending.topology_stage_next_corr = 0U;
+  pending.topology_stage_finalize_corr =
+      (topology_stage_finalize_corr == 0U) ? pending.corr_last : topology_stage_finalize_corr;
+  pending.topology_stage_finalize_seen = false;
+  pending.topology_stage_snapshot = ManagementTopologySnapshotPayload{};
+  if (pending.wait_topology_stage_done) {
+    if (topology_stage_snapshot != nullptr) {
+      pending.topology_stage_snapshot = *topology_stage_snapshot;
+    }
+    pending.topology_stage_step = kTopologyStageStepWaitClearAck;
+    pending.topology_stage_next_corr =
+        (pending.corr_last == 0xFFFFFFFFU) ? pending.corr_last : (pending.corr_last + 1U);
+    pending.topology_stage_expected_responses = 1U;
+    pending.topology_stage_seen_responses = 0U;
+    pending.topology_stage_seen_bitmap.assign(1U, 0U);
+  } else {
+    pending.topology_stage_expected_responses = 0U;
+    pending.topology_stage_seen_responses = 0U;
+    pending.topology_stage_seen_bitmap.clear();
+  }
+  if (pending.wait_node_bundle_done) {
+    uint8_t bundle_mask = 0U;
+    if (management_utils::parseNodeBundleGetPayload(request.payload, bundle_mask)) {
+      pending.wait_node_bundle_strict_done = ((bundle_mask & kNodeBundleMaskSettings) != 0U);
+    }
+  }
+  pending.response_chunks = 0U;
+  pending.node_bundle_done_seen = false;
+  pending.node_bundle_total_known = false;
+  pending.node_bundle_expected_total = 0U;
+  pending.node_bundle_settings_ranges.clear();
+  uint32_t timeout_ms = request.timeout_ms;
+  if (timeout_ms == 0U) {
+    timeout_ms = commandTimeoutMs(request.cmd_id);
+  }
+  if (timeout_ms == 0U) {
+    timeout_ms = 1500U;
+  }
+  pending.deadline_ms = now_ms_ + timeout_ms;
+
+  for (auto& existing : pending_descriptor_pulls_) {
+    if (existing.source == pending.source &&
+        existing.peer == pending.peer &&
+        existing.corr_first == pending.corr_first &&
+        existing.corr_last == pending.corr_last) {
+      existing = pending;
+      return;
+    }
+  }
+  pending_descriptor_pulls_.push_back(std::move(pending));
+}
+
+void ManagementService::dispatchDeferredTopologyCommitsForPeer_(const MacAddress& peer,
+                                                                ManagementStatus stage_status) {
+  if (deferred_topology_commits_.empty()) {
+    return;
+  }
+
+  std::vector<PendingDeferredTopologyCommit> keep{};
+  keep.reserve(deferred_topology_commits_.size());
+  for (auto& deferred : deferred_topology_commits_) {
+    if (deferred.peer != peer) {
+      keep.push_back(std::move(deferred));
+      continue;
+    }
+
+    if (stage_status != ManagementStatus::Ok) {
+      queueResponse(deferred.source,
+                    deferred.cmd_id,
+                    deferred.req_id,
+                    stage_status,
+                    {},
+                    &deferred.peer_ctx);
+      continue;
+    }
+
+    if (pull_ == nullptr || !pull_->requestTopologyCommit(deferred.peer, deferred.req_id)) {
+      queueResponse(deferred.source,
+                    deferred.cmd_id,
+                    deferred.req_id,
+                    ManagementStatus::InternalError,
+                    {},
+                    &deferred.peer_ctx);
+      continue;
+    }
+
+    ManagementRequest synthetic{};
+    synthetic.source = deferred.source;
+    synthetic.cmd_id = deferred.cmd_id;
+    synthetic.req_id = deferred.req_id;
+    synthetic.timeout_ms =
+        (deferred.deadline_ms > now_ms_) ? static_cast<uint32_t>(deferred.deadline_ms - now_ms_) : 0U;
+    trackPendingDescriptorPull_(synthetic,
+                                deferred.peer_ctx,
+                                deferred.peer,
+                                deferred.req_id,
+                                deferred.req_id,
+                                false,
+                                0U);
+  }
+  deferred_topology_commits_.swap(keep);
+}
+
+void ManagementService::prunePendingDescriptorPulls_() {
+  if (pending_descriptor_pulls_.empty()) {
+    // Continue to prune deferred topology commits even without pending pulls.
+  } else {
+    auto it = pending_descriptor_pulls_.begin();
+    while (it != pending_descriptor_pulls_.end()) {
+      if (static_cast<int32_t>(now_ms_ - it->deadline_ms) >= 0) {
+        it = pending_descriptor_pulls_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  if (!deferred_topology_commits_.empty()) {
+    std::vector<PendingDeferredTopologyCommit> keep{};
+    keep.reserve(deferred_topology_commits_.size());
+    for (const auto& deferred : deferred_topology_commits_) {
+      if (static_cast<int32_t>(now_ms_ - deferred.deadline_ms) >= 0) {
+        queueResponse(deferred.source,
+                      deferred.cmd_id,
+                      deferred.req_id,
+                      ManagementStatus::Timeout,
+                      {},
+                      &deferred.peer_ctx);
+      } else {
+        keep.push_back(deferred);
+      }
+    }
+    deferred_topology_commits_.swap(keep);
+  }
 }
 
 bool ManagementService::runPushCommand(const ManagementRequest& request, uint16_t cmd_id) {
@@ -4929,6 +5490,7 @@ uint8_t ManagementService::commandPriority(uint16_t cmd_id) {
       c == ManagementCommandId::TopologyStatusGet ||
       c == ManagementCommandId::TopologySlotsGet ||
       c == ManagementCommandId::CommTestStatus || c == ManagementCommandId::CommTestReport ||
+      c == ManagementCommandId::NodeBundleGet ||
       c == ManagementCommandId::SettingGet ||
       c == ManagementCommandId::SettingSet || c == ManagementCommandId::LiveGet ||
       c == ManagementCommandId::LiveMonitorStatusGet ||
@@ -4972,7 +5534,9 @@ uint32_t ManagementService::commandTimeoutMs(uint16_t cmd_id) {
   const ManagementCommandId c = static_cast<ManagementCommandId>(cmd_id);
   if (c == ManagementCommandId::PairRequest || c == ManagementCommandId::UnpairRequest ||
       c == ManagementCommandId::CommTestRun) return 5000;
-  if (c == ManagementCommandId::SettingsGet || c == ManagementCommandId::SettingsPageGet) return 5000;
+  if (c == ManagementCommandId::NodeBundleGet ||
+      c == ManagementCommandId::SettingsGet ||
+      c == ManagementCommandId::SettingsPageGet) return 5000;
   if (c == ManagementCommandId::LogLocalRead || c == ManagementCommandId::LogRemoteRead) return 3000;
   if (c == ManagementCommandId::StorageFormat) return 30000;
   if (c == ManagementCommandId::OtaTransferBegin || c == ManagementCommandId::OtaTransferChunk ||
@@ -5085,6 +5649,7 @@ void ManagementService::onEvent(const Event& event) {
     appendU16(payload, static_cast<uint16_t>(event.rssi));
     appendStringU8(payload, event.node_name);
     appendU8(payload, event.src_role);
+    appendU16(payload, 0U);  // just-seen age in seconds
     queueEvent({ManagementEventId::DiscoveryUpdate, ManagementSource::Unknown, 0, event.correlation_id, ManagementStatus::Ok, payload});
     return;
   }
@@ -5391,6 +5956,339 @@ void ManagementService::onEvent(const Event& event) {
     appendStringU8(payload, event.message);
     queueEvent({ManagementEventId::CmdFail, ManagementSource::Unknown, 0, event.correlation_id, ManagementStatus::InternalError, payload});
   }
+}
+
+bool ManagementService::onPullRequest(const MacAddress& from,
+                                      uint32_t corr_id,
+                                      const uint8_t* payload,
+                                      size_t len) {
+  (void)from;
+  (void)corr_id;
+  (void)payload;
+  (void)len;
+  return true;
+}
+
+bool ManagementService::onPullResponse(const MacAddress& from,
+                                       uint32_t corr_id,
+                                       const uint8_t* payload,
+                                       size_t len) {
+  std::lock_guard<std::recursive_mutex> lk(state_mx_);
+  if (corr_id == 0U || pending_descriptor_pulls_.empty()) {
+    return true;
+  }
+
+  auto it = std::find_if(pending_descriptor_pulls_.begin(),
+                         pending_descriptor_pulls_.end(),
+                         [&](const PendingDescriptorPull& pending) {
+                            if (pending.peer != from) {
+                              return false;
+                            }
+                            if (pending.wait_topology_stage_done) {
+                              return corr_id == pending.corr_last;
+                            }
+                            const uint32_t corr_first = (pending.corr_first == 0U) ? pending.req_id : pending.corr_first;
+                            const uint32_t corr_last = (pending.corr_last == 0U) ? pending.req_id : pending.corr_last;
+                            return corr_id >= corr_first && corr_id <= corr_last;
+                          });
+  if (it == pending_descriptor_pulls_.end()) {
+    return true;
+  }
+
+  PendingDescriptorPull& pending = *it;
+  if (pending.wait_topology_stage_done && corr_id != pending.corr_last) {
+    // Ack-paced stage flow allows exactly one in-flight correlation.
+    // Ignore stale/out-of-order retries from earlier correlations.
+    return true;
+  }
+
+  std::vector<uint8_t> response_payload{};
+  if (payload != nullptr && len > 0U) {
+    response_payload.assign(payload, payload + len);
+  }
+
+  ManagementStatus status = response_payload.empty() ? ManagementStatus::InternalError : ManagementStatus::Ok;
+  std::vector<uint8_t> queued_payload = response_payload;
+  PullResponseDecoded decoded{};
+  bool decoded_ok = false;
+  if (!response_payload.empty() && pull_ != nullptr) {
+    if (!pull_->decodePullResponseWithActiveCodec(response_payload.data(), response_payload.size(), decoded)) {
+      status = ManagementStatus::InternalError;
+    } else if (decoded.kind == PullResponseKind::Descriptor) {
+      std::string descriptor_payload{};
+      if (!encodeDescriptorResponse(decoded.descriptor, descriptor_payload)) {
+        status = ManagementStatus::InternalError;
+      } else {
+        queued_payload.assign(descriptor_payload.begin(), descriptor_payload.end());
+      }
+      if (decoded.descriptor.type == DescriptorResponseType::Error) {
+        status = descriptorErrorToStatus_(static_cast<ManagementCommandId>(pending.cmd_id),
+                                          decoded.descriptor.message);
+      }
+      decoded_ok = true;
+    } else if (decoded.kind == PullResponseKind::ControlResult) {
+      status = (decoded.control.result_code == 0U) ? ManagementStatus::Ok : ManagementStatus::InternalError;
+      decoded_ok = true;
+    } else {
+      status = ManagementStatus::InternalError;
+    }
+  }
+
+  bool keep_pending = false;
+  if (pending.wait_topology_stage_done) {
+    const ManagementCommandId pending_cmd = static_cast<ManagementCommandId>(pending.cmd_id);
+    if (!decoded_ok || decoded.kind != PullResponseKind::Descriptor) {
+      status = ManagementStatus::InternalError;
+      keep_pending = false;
+    } else if (decoded.descriptor.type == DescriptorResponseType::Error) {
+      status = descriptorErrorToStatus_(pending_cmd, decoded.descriptor.message);
+      keep_pending = false;
+    } else if (decoded.descriptor.type != DescriptorResponseType::Ack) {
+      status = ManagementStatus::InternalError;
+      keep_pending = false;
+    } else {
+        const auto dispatch_next_stage_step = [&](uint8_t next_step) -> bool {
+          if (pull_ == nullptr) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+
+          uint32_t send_corr = allocateInternalCorrelation_();
+          if (send_corr == 0U) {
+            send_corr = pending.corr_last + 1U;
+            if (send_corr == 0U) {
+              send_corr = 1U;
+            }
+          }
+
+          auto mark_dispatched = [&]() {
+            pending.corr_first = send_corr;
+            pending.corr_last = send_corr;
+            pending.topology_stage_next_corr = send_corr + 1U;
+            if (pending.topology_stage_next_corr == 0U) {
+              pending.topology_stage_next_corr = 1U;
+            }
+          pending.topology_stage_step = next_step;
+          if (pending.topology_stage_expected_responses < 0xFFFFU) {
+            ++pending.topology_stage_expected_responses;
+          }
+          pending.topology_stage_seen_bitmap.push_back(0U);
+          keep_pending = true;
+          status = ManagementStatus::OkDeferred;
+        };
+
+        const auto& snap = pending.topology_stage_snapshot;
+        if (next_step == kTopologyStageStepWaitBeginAck) {
+          if (!pull_->requestTopologyStageBegin(pending.peer,
+                                                snap.schema_version,
+                                                snap.topology_version,
+                                                snap.index_neg,
+                                                snap.index_pos,
+                                                send_corr)) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+          mark_dispatched();
+          return true;
+        }
+        if (next_step == kTopologyStageStepWaitGroupAck) {
+          if (pending.topology_stage_group_cursor >= snap.groups.size()) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+          const ManagementTopologyGroupSeedPayload& group =
+              snap.groups[pending.topology_stage_group_cursor];
+          if (!pull_->requestTopologyStageGroupSet(pending.peer, group, send_corr)) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+          ++pending.topology_stage_group_cursor;
+          mark_dispatched();
+          return true;
+        }
+        if (next_step == kTopologyStageStepWaitSlotAck) {
+          if (pending.topology_stage_slot_cursor >= snap.slots.size()) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+          const ManagementTopologySlotPayload& slot =
+              snap.slots[pending.topology_stage_slot_cursor];
+          if (!pull_->requestTopologyStageSlotSet(pending.peer, slot, send_corr)) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+          ++pending.topology_stage_slot_cursor;
+          mark_dispatched();
+          return true;
+        }
+        if (next_step == kTopologyStageStepWaitFinalizeAck) {
+          if (!pull_->requestTopologyStageFinalize(pending.peer, send_corr)) {
+            status = ManagementStatus::InternalError;
+            keep_pending = false;
+            return false;
+          }
+          pending.topology_stage_finalize_corr = send_corr;
+          mark_dispatched();
+          return true;
+        }
+
+        status = ManagementStatus::InternalError;
+        keep_pending = false;
+        return false;
+      };
+
+      const auto dispatch_next_data_or_finalize = [&]() -> bool {
+        const auto& snap = pending.topology_stage_snapshot;
+        if (pending.topology_stage_group_cursor < snap.groups.size()) {
+          return dispatch_next_stage_step(kTopologyStageStepWaitGroupAck);
+        }
+        if (pending.topology_stage_slot_cursor < snap.slots.size()) {
+          return dispatch_next_stage_step(kTopologyStageStepWaitSlotAck);
+        }
+        return dispatch_next_stage_step(kTopologyStageStepWaitFinalizeAck);
+      };
+
+      if (pending.topology_stage_seen_responses < 0xFFFFU) {
+        ++pending.topology_stage_seen_responses;
+      }
+      switch (pending.topology_stage_step) {
+        case kTopologyStageStepWaitClearAck:
+          (void)dispatch_next_stage_step(kTopologyStageStepWaitBeginAck);
+          break;
+        case kTopologyStageStepWaitBeginAck:
+          (void)dispatch_next_data_or_finalize();
+          break;
+        case kTopologyStageStepWaitGroupAck:
+          (void)dispatch_next_data_or_finalize();
+          break;
+        case kTopologyStageStepWaitSlotAck:
+          (void)dispatch_next_data_or_finalize();
+          break;
+        case kTopologyStageStepWaitFinalizeAck:
+          pending.topology_stage_finalize_seen = true;
+          pending.topology_stage_step = kTopologyStageStepNone;
+          status = ManagementStatus::Ok;
+          keep_pending = false;
+          break;
+        default:
+          status = ManagementStatus::InternalError;
+          keep_pending = false;
+          break;
+      }
+
+      if (!keep_pending &&
+          status == ManagementStatus::Ok &&
+          pending.topology_stage_finalize_corr != 0U &&
+          corr_id != pending.topology_stage_finalize_corr) {
+        status = ManagementStatus::InternalError;
+      }
+    }
+  } else if (pending.wait_node_bundle_done &&
+      decoded_ok &&
+      decoded.kind == PullResponseKind::Descriptor &&
+      status == ManagementStatus::Ok) {
+    if (decoded.descriptor.type == DescriptorResponseType::Error) {
+      status = ManagementStatus::InternalError;
+      keep_pending = false;
+    } else {
+      // NodeBundleGet may be emitted in multiple paged descriptor chunks.
+      // Keep request pending until the paging terminal marker is observed.
+      bool bundle_done = (!decoded.descriptor.is_paged || decoded.descriptor.done);
+      if (pending.wait_node_bundle_strict_done &&
+          decoded.descriptor.type == DescriptorResponseType::NodeBundle) {
+        // Strict settings bundle completion (settings cache path):
+        // require full contiguous coverage [0..total_count) and at least one
+        // observed final marker. This prevents premature terminal completion
+        // when paged frames arrive out-of-order.
+        if (!decoded.descriptor.is_paged) {
+          pending.node_bundle_settings_ranges.clear();
+          const uint16_t one_shot_count = static_cast<uint16_t>(
+              std::min<size_t>(decoded.descriptor.settings.size(), 0xFFFFU));
+          mergeCoverageRange_(pending.node_bundle_settings_ranges, 0U, one_shot_count);
+          pending.node_bundle_done_seen = true;
+          pending.node_bundle_total_known = true;
+          pending.node_bundle_expected_total = one_shot_count;
+          bundle_done = true;
+        } else {
+          const uint16_t start = decoded.descriptor.cursor;
+          const uint16_t count = decoded.descriptor.returned_count;
+          const uint16_t end = static_cast<uint16_t>(
+              std::min<uint32_t>(static_cast<uint32_t>(start) + static_cast<uint32_t>(count), 0xFFFFU));
+          mergeCoverageRange_(pending.node_bundle_settings_ranges, start, end);
+          if (decoded.descriptor.total_count > 0U || decoded.descriptor.done) {
+            pending.node_bundle_total_known = true;
+            pending.node_bundle_expected_total = decoded.descriptor.total_count;
+          }
+          if (decoded.descriptor.done) {
+            pending.node_bundle_done_seen = true;
+          }
+          const uint16_t contiguous = contiguousCoverageFromZero_(pending.node_bundle_settings_ranges);
+          bool coverage_complete = false;
+          if (pending.node_bundle_total_known) {
+            coverage_complete = (pending.node_bundle_expected_total == 0U) ||
+                                (contiguous >= pending.node_bundle_expected_total);
+          }
+          bundle_done = pending.node_bundle_done_seen && coverage_complete;
+          std::printf("[ESPNOW][BUNDLE] req=%lu peer=%s cursor=%u returned=%u next=%u total=%u done=%u covered=%u complete=%u\n",
+                      static_cast<unsigned long>(pending.req_id),
+                      macToString(from).c_str(),
+                      static_cast<unsigned int>(decoded.descriptor.cursor),
+                      static_cast<unsigned int>(decoded.descriptor.returned_count),
+                      static_cast<unsigned int>(decoded.descriptor.next_cursor),
+                      static_cast<unsigned int>(pending.node_bundle_expected_total),
+                      pending.node_bundle_done_seen ? 1U : 0U,
+                      static_cast<unsigned int>(contiguous),
+                      bundle_done ? 1U : 0U);
+        }
+      }
+      if (pending.wait_node_bundle_strict_done &&
+          decoded.descriptor.type != DescriptorResponseType::NodeBundle) {
+        status = ManagementStatus::InternalError;
+        keep_pending = false;
+      } else if (!bundle_done) {
+        status = ManagementStatus::OkDeferred;
+        keep_pending = true;
+      }
+    }
+  }
+
+  const ManagementSource response_source = pending.source;
+  const uint16_t response_cmd_id = pending.cmd_id;
+  const uint32_t response_req_id = pending.req_id;
+  const PeerResolveContext response_peer_ctx = pending.peer_ctx;
+  const MacAddress response_peer = pending.peer;
+  const bool topology_stage_terminal =
+      pending.wait_topology_stage_done && !keep_pending &&
+      response_cmd_id == static_cast<uint16_t>(ManagementCommandId::TopologyStageSet);
+  const ManagementStatus topology_stage_status = status;
+
+  if (keep_pending) {
+    pending.response_chunks += 1U;
+    uint32_t extend_ms = commandTimeoutMs(pending.cmd_id);
+    if (extend_ms == 0U) {
+      extend_ms = 1500U;
+    }
+    pending.deadline_ms = now_ms_ + extend_ms;
+  } else {
+    pending_descriptor_pulls_.erase(it);
+  }
+
+  queueResponse(response_source,
+                response_cmd_id,
+                response_req_id,
+                status,
+                queued_payload,
+                &response_peer_ctx);
+  if (topology_stage_terminal) {
+    dispatchDeferredTopologyCommitsForPeer_(response_peer, topology_stage_status);
+  }
+  return true;
 }
 
 }  // namespace espnow_link

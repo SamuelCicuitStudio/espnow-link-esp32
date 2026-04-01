@@ -53,12 +53,15 @@ std::string normalizeMasterStagedPath(const std::string& raw_path) {
 }
 
 void configureQueueOverflowPolicies(ManagementQueueTransport::Config& cfg, bool drop_oldest_when_full) {
-  const auto policy = drop_oldest_when_full
-                          ? ManagementQueueTransport::OverflowPolicy::DropOldest
-                          : ManagementQueueTransport::OverflowPolicy::RejectNew;
-  cfg.request_overflow_policy = policy;
-  cfg.response_overflow_policy = policy;
-  cfg.event_overflow_policy = policy;
+  // Keep request path deterministic: never drop oldest mutating command implicitly.
+  cfg.request_overflow_policy = ManagementQueueTransport::OverflowPolicy::RejectNew;
+
+  // Response/event channels can optionally prefer newest data under pressure.
+  const auto passive_policy = drop_oldest_when_full
+                                  ? ManagementQueueTransport::OverflowPolicy::DropOldest
+                                  : ManagementQueueTransport::OverflowPolicy::RejectNew;
+  cfg.response_overflow_policy = passive_policy;
+  cfg.event_overflow_policy = passive_policy;
 }
 
 }  // namespace
@@ -243,7 +246,7 @@ void MasterCriticalActions::tick() {
   }
 
 #if defined(ARDUINO)
-  Serial.printf("[%s] %s requested: deep-sleep reboot in %lums\n",
+  Serial.printf("[%s] %s requested: reboot in %lums\n",
                 (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "MASTER",
                 reset_ ? "reset" : "restart",
                 static_cast<unsigned long>(cfg_.reboot_delay_ms));
@@ -301,7 +304,7 @@ bool MasterNodeBootstrap::begin(const Config& cfg) {
   cfg_ = cfg;
   ready_ = false;
   input_ = nullptr;
-  control_mux_.bind(nullptr);
+  control_mux_.clear();
   event_mux_.clearSinks();
   owned_input_.reset();
   owned_io_.reset();
@@ -394,7 +397,9 @@ bool MasterNodeBootstrap::begin(const Config& cfg) {
                                      cfg_.cli_traffic_policy);
   management_->bindMasterCli(cli_.get());
 
-  control_mux_.bind(cli_.get());
+  control_mux_.clear();
+  control_mux_.add(management_.get());
+  control_mux_.add(cli_.get());
   event_mux_.addSink(cli_.get());
   event_mux_.addSink(management_.get());
   if (cfg_.extra_event_sink != nullptr) {

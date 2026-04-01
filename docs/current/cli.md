@@ -112,6 +112,31 @@ Topology (operator/editor/file):
 - `topology.deploy.file <path>`
 - `topology.edit.*` workflow (`new|add|del|clear|show|validate|save|load`)
 
+Project-specific fixed-chain extension (proposed):
+
+- fixed file target: `D:\Freelancer\cornetb5\EasyDriveway-production\data\icm\o\s\tp.json`
+- no path argument in these commands:
+  - `topology.chain.show`
+  - `topology.chain.graph`
+  - `topology.chain.clear`
+  - `topology.chain.add <S|R|SM|RM> <paired_index|MAC> [vi]`
+  - `topology.chain.edit <index> <S|R|SM|RM> <paired_index|MAC> [vi]`
+  - `topology.chain.del <index>`
+  - `topology.chain.move <from_index> <to_index>`
+  - `topology.chain.validate`
+  - `topology.chain.fix`
+  - `topology.chain.apply`
+  - `topology.chain.backup`
+  - `topology.chain.restore`
+  - `topology.chain.set <chain_spec>`
+  - `topology.chain.set.help`
+
+Bulk one-line chain input syntax:
+
+- `<TYPE>@<PEER>[#<CH>]` joined by `>`
+- types: `S`, `R`, `SM`, `RM`
+- channel only for `SM`/`RM` (`SM:1..8`, `RM:1..16`)
+
 Storage/logger/OTA commands are available via `help logger`, `help sd`, `help ota`.
 
 ## Profile-Aware CLI Behavior

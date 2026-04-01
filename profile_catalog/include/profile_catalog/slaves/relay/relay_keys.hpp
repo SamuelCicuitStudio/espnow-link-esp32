@@ -26,6 +26,7 @@
 #define PCAT_RELAY_KEY_LOOPA "loopa"  // Relay loop automation enable.
 #define PCAT_RELAY_KEY_FANMD "fanmd"  // Fan mode (0:auto,1:eco,2:forced,3:stopped).
 #define PCAT_RELAY_KEY_BUZEN "buzen"  // Audio ping buzzer feedback enable.
+#define PCAT_RELAY_KEY_CLIBD "cbaud"  // Local CLI/USB serial baud (applied at boot).
 #define PCAT_RELAY_KEY_LEDFB "ledfb"  // Audio ping LED feedback enable.
 #define PCAT_RELAY_KEY_RGBIDL "rgbidl" // RGB idle color.
 #define PCAT_RELAY_KEY_RGBALT "rgbalt" // RGB alert color.
@@ -59,6 +60,7 @@
 #define PCAT_RELAY_SET_LOOPA "LoopAuto"
 #define PCAT_RELAY_SET_FANMD "fan_mode"
 #define PCAT_RELAY_SET_BUZEN "buzzer_enable"
+#define PCAT_RELAY_SET_CLIBD "cli_baud"
 #define PCAT_RELAY_SET_LEDFB "led_feedback_enable"
 #define PCAT_RELAY_SET_RGBIDL "rgb_idle_color"
 #define PCAT_RELAY_SET_RGBALT "rgb_alert_color"
@@ -106,6 +108,9 @@
 #define PCAT_RELAY_SET_FANMD_MIN 0U
 #define PCAT_RELAY_SET_FANMD_MAX 3U
 #define PCAT_RELAY_SET_BUZEN_DEF 1
+#define PCAT_RELAY_SET_CLIBD_DEF 115200U
+#define PCAT_RELAY_SET_CLIBD_MIN 9600U
+#define PCAT_RELAY_SET_CLIBD_MAX 921600U
 #define PCAT_RELAY_SET_LEDFB_DEF 1
 #define PCAT_RELAY_SET_RGBIDL_DEF "#00ffaa"
 #define PCAT_RELAY_SET_RGBALT_DEF "#ff3366"
@@ -126,7 +131,7 @@
 #define PCAT_RELAY_SET_PSHS_DEF "all"
 #define PCAT_RELAY_SET_TOPV_DEF 0U
 
-#define PCAT_RELAY_SETMAP "device_name,channel,split_idx,pulse_ms,hold_ms,interlock,rt_limit_c,sensor_a_mac,sensor_b_mac,relay1_enable,relay2_enable,persist_output_state,LoopAuto,fan_mode,buzzer_enable,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
+#define PCAT_RELAY_SETMAP "device_name,channel,split_idx,pulse_ms,hold_ms,interlock,rt_limit_c,sensor_a_mac,sensor_b_mac,relay1_enable,relay2_enable,persist_output_state,LoopAuto,fan_mode,buzzer_enable,cli_baud,led_feedback_enable,rgb_idle_color,rgb_alert_color,rgb_brightness,push_enabled,push_mode,push_interval_ms,push_delta_abs,push_min_gap_ms,push_metric_scope,topo_version,topo_seed_id,topo_state,topo_prev_mac,topo_next_mac,topo_allowed_sources_blob"
 #define PCAT_RELAY_METMAP "relay_bitmap,uptime_ms,env_temp_c"
 #define PCAT_RELAY_EVMAP "relay_on,relay_off,topology_applied"
 
@@ -145,6 +150,7 @@ PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_OPERS);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_LOOPA);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_FANMD);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_BUZEN);
+PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_CLIBD);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_LEDFB);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_RGBIDL);
 PCAT_ASSERT_NVS_KEY_LEN(PCAT_RELAY_KEY_RGBALT);

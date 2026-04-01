@@ -31,6 +31,9 @@ constexpr uint16_t kLogEvtPairReq = 0x0009;
 constexpr uint16_t kLogEvtUnpairReq = 0x000A;
 constexpr uint16_t kLogEvtRestoreTrimDrop = 0x000B;
 constexpr uint16_t kLogEvtRestoreTrimSummary = 0x000C;
+constexpr uint16_t kLogEvtTopologyLmkRestore = 0x000D;
+constexpr uint16_t kLogEvtTopologyPeerReady = 0x000E;
+constexpr uint16_t kLogEvtTopologyLmkNvsLifecycle = 0x000F;
 constexpr uint16_t kOtaBootCompleteEventId = 0x7F10;
 constexpr uint16_t kOtaTransferReadyEventId = 0x7F11;
 constexpr uint8_t kFirmwareStatusKindChunkAck = 0x01;
@@ -68,8 +71,10 @@ constexpr size_t kTopologyBlobSize =
     kTopologyHeaderBlobSize +
     (espnow_link::EspNowManager::kTopologyMaxSlots * kTopologySlotBlobSize) +
     (espnow_link::EspNowManager::kTopologyMaxGroups * kTopologyGroupBlobSize);
-constexpr uint8_t kTopologyLmkBlobVersion = 1U;
+constexpr uint8_t kTopologyLmkBlobVersionV1 = 1U;
+constexpr uint8_t kTopologyLmkBlobVersionV2 = 2U;
 constexpr size_t kTopologyLmkBlobEntrySize = 23U;  // mac(6)+lmk(16)+group(1)
+constexpr size_t kTopologyLmkBlobHeaderSizeV2 = 23U;
 constexpr uint32_t kTopologyTriggerDedupWindowMs = 15000U;
 constexpr size_t kTopologyTriggerDedupMaxEntries = 32U;
 constexpr uint8_t kTopologyTriggerResultAccepted = 0U;
@@ -84,6 +89,10 @@ constexpr size_t kPullRequestDispatchBudgetPerTick = 1U;
 constexpr size_t kPullResponseDispatchBudgetPerTick = 4U;
 constexpr size_t kFirmwareRxDispatchBudgetPerTick = 4U;
 constexpr size_t kControlRxDispatchBudgetPerTick = 4U;
+constexpr uint8_t kTopologyRestoreModeNone = 0U;
+constexpr uint8_t kTopologyRestoreModeNvs = 1U;
+constexpr uint8_t kTopologyRestoreModeDerived = 2U;
+constexpr uint8_t kTopologyRestoreModeFailed = 3U;
 
 int compareMac(const espnow_link::MacAddress& lhs, const espnow_link::MacAddress& rhs) {
   for (size_t i = 0; i < lhs.size(); ++i) {
@@ -730,6 +739,36 @@ void EspNowManager::emitRuntimeLog(LibraryLogLevel level,
                          clipped_ext_len);
 }
 
+void EspNowManager::emitTopologyRuntimeLog_(LibraryLogLevel level,
+                                            uint16_t event_id,
+                                            int32_t p1,
+                                            int32_t p2,
+                                            const char* reason) {
+  const uint8_t* ext = nullptr;
+  size_t ext_len = 0U;
+  if (reason != nullptr && reason[0] != '\0') {
+    ext = reinterpret_cast<const uint8_t*>(reason);
+    ext_len = std::strlen(reason);
+  }
+  emitRuntimeLog(level, event_id, 0U, p1, p2, ext, ext_len);
+}
+
+void EspNowManager::setTopologyRestoreStatus_(uint8_t mode, const char* reason) {
+  topology_restore_mode_ = mode;
+  topology_restore_reason_.fill('\0');
+  if (reason != nullptr && reason[0] != '\0') {
+    std::snprintf(topology_restore_reason_.data(), topology_restore_reason_.size(), "%s", reason);
+  }
+}
+
+void EspNowManager::noteTopologyPeerReadyFailure_(const char* reason) {
+  ++topology_peer_ready_fail_count_;
+  const char* safe_reason = (reason != nullptr && reason[0] != '\0') ? reason : "peer_not_ready";
+  ++topology_peer_ready_fail_by_reason_[safe_reason];
+  topology_peer_ready_last_reason_.fill('\0');
+  std::snprintf(topology_peer_ready_last_reason_.data(), topology_peer_ready_last_reason_.size(), "%s", safe_reason);
+}
+
 bool EspNowManager::begin(const MacAddress& local_mac) {
   if (local_profile_ == nullptr || local_profile_id_ == kProfileUnknown) {
     return false;
@@ -764,6 +803,10 @@ bool EspNowManager::begin(const MacAddress& local_mac) {
   paired_cache_valid_ = false;
   paired_cache_state_ = false;
   paired_cache_peer_ = MacAddress{};
+  setTopologyRestoreStatus_(kTopologyRestoreModeNone, "unset");
+  topology_peer_ready_fail_count_ = 0U;
+  topology_peer_ready_last_reason_.fill('\0');
+  topology_peer_ready_fail_by_reason_.clear();
   emitRuntimeLog(LibraryLogLevel::Info, kLogEvtBeginOk, 0, static_cast<int32_t>(start_channel), 0);
   return true;
 }
@@ -1302,9 +1345,81 @@ bool EspNowManager::restorePairedLink(const PairRecord& record) {
   paired_cache_peer_ = record.peer_mac;
   if (config_.local_role == Role::Slave) {
     (void)restoreTelemetryPushConfig(record.peer_mac);
+    setTopologyRestoreStatus_(kTopologyRestoreModeNone, "topology_not_committed");
     if (has_topology_committed_) {
       std::string topology_error{};
-      (void)materializeTopologyPeers_(topology_committed_, &topology_error);
+      bool topology_ok = false;
+      bool used_nvs_restore = false;
+      bool used_derive_restore = false;
+
+      TopologyPersistedLmkMeta_ meta{};
+      std::string load_error{};
+      if (loadTopologyLmkMeta_(meta, &load_error)) {
+        std::string validate_error{};
+        if (validateTopologyLmkMeta_(meta, topology_committed_, record.peer_mac, &validate_error)) {
+          std::map<MacAddress, LmkKey> desired{};
+          std::string desired_error{};
+          if (buildDesiredTopologyPeersFromNvs_(topology_committed_, meta, desired, &desired_error)) {
+            topology_ok = applyTopologyDesiredPeers_(desired, &topology_error);
+            used_nvs_restore = topology_ok;
+            if (topology_ok) {
+              setTopologyRestoreStatus_(kTopologyRestoreModeNvs, "topology_lmk_nvs_hit");
+              emitTopologyRuntimeLog_(LibraryLogLevel::Info,
+                                      kLogEvtTopologyLmkRestore,
+                                      static_cast<int32_t>(topology_committed_.enabled_slot_count),
+                                      static_cast<int32_t>(topology_committed_.topology_version),
+                                      "topology_lmk_nvs_hit");
+            }
+          } else {
+            topology_error = desired_error;
+          }
+        } else {
+          topology_error = validate_error;
+        }
+      } else {
+        topology_error = load_error;
+      }
+
+      if (!topology_ok) {
+        emitTopologyRuntimeLog_(LibraryLogLevel::Warn,
+                                kLogEvtTopologyLmkNvsLifecycle,
+                                static_cast<int32_t>(topology_committed_.enabled_slot_count),
+                                static_cast<int32_t>(topology_committed_.topology_version),
+                                topology_error.empty() ? "topology_lmk_nvs_miss" : topology_error.c_str());
+        std::string derive_error{};
+        topology_ok = materializeTopologyPeers_(topology_committed_, &derive_error);
+        if (topology_ok) {
+          used_derive_restore = true;
+          setTopologyRestoreStatus_(kTopologyRestoreModeDerived, "topology_lmk_nvs_fallback_derive");
+          emitTopologyRuntimeLog_(LibraryLogLevel::Info,
+                                  kLogEvtTopologyLmkRestore,
+                                  static_cast<int32_t>(topology_committed_.enabled_slot_count),
+                                  static_cast<int32_t>(topology_committed_.topology_version),
+                                  "topology_lmk_nvs_fallback_derive");
+          const bool nvs_saved = saveTopologyLmkMeta_(topology_committed_);
+          if (!nvs_saved) {
+            emitTopologyRuntimeLog_(LibraryLogLevel::Warn,
+                                    kLogEvtTopologyLmkNvsLifecycle,
+                                    static_cast<int32_t>(topology_committed_.enabled_slot_count),
+                                    static_cast<int32_t>(topology_committed_.topology_version),
+                                    "topology_lmk_nvs_write_fail");
+          }
+        } else if (!derive_error.empty()) {
+          topology_error = derive_error;
+        }
+      }
+
+      if (!topology_ok) {
+        setTopologyRestoreStatus_(kTopologyRestoreModeFailed,
+                                  topology_error.empty() ? "topology_lmk_restore_fail" : topology_error.c_str());
+        emitTopologyRuntimeLog_(LibraryLogLevel::Warn,
+                                kLogEvtTopologyLmkRestore,
+                                static_cast<int32_t>(topology_committed_.enabled_slot_count),
+                                static_cast<int32_t>(topology_committed_.topology_version),
+                                topology_error.empty() ? "topology_lmk_restore_fail" : topology_error.c_str());
+      } else if (!used_nvs_restore && !used_derive_restore) {
+        setTopologyRestoreStatus_(kTopologyRestoreModeNone, "topology_not_applied");
+      }
     }
   }
   (void)peer_registry_.markPaired(record.peer_mac, current_now_ms_);
@@ -1325,6 +1440,14 @@ bool EspNowManager::requestUnpair(const MacAddress& peer, uint32_t corr_id) {
                  0,
                  peer.data(),
                  peer.size());
+  if (ok && config_.local_role == Role::Slave && store_ != nullptr && store_->enabled()) {
+    const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+    emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(kTopologyMetaSlotLmk),
+                            0,
+                            erased ? "topology_lmk_nvs_purge_old" : "topology_lmk_nvs_purge_old_failed");
+  }
   return ok;
 }
 
@@ -1348,6 +1471,14 @@ bool EspNowManager::removePeer(const MacAddress& peer, bool erase_persisted) {
     topology_attached_peers_.erase(
         std::remove(topology_attached_peers_.begin(), topology_attached_peers_.end(), peer),
         topology_attached_peers_.end());
+    if (erase_persisted && config_.local_role == Role::Slave && store_ != nullptr && store_->enabled()) {
+      const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+      emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                              kLogEvtTopologyLmkNvsLifecycle,
+                              static_cast<int32_t>(kTopologyMetaSlotLmk),
+                              0,
+                              erased ? "topology_lmk_nvs_purge_old" : "topology_lmk_nvs_purge_old_failed");
+    }
   }
   return removed;
 }
@@ -1557,6 +1688,25 @@ bool EspNowManager::stageTopology(const TopologySnapshot& snapshot, std::string*
     return false;
   }
 
+  if (config_.local_role == Role::Slave && store_ != nullptr && store_->enabled()) {
+    const bool differs_from_staged =
+        (!has_topology_staged_) ||
+        (topology_staged_.topology_version != normalized.topology_version) ||
+        (topology_staged_.checksum != normalized.checksum);
+    const bool differs_from_committed =
+        (!has_topology_committed_) ||
+        (topology_committed_.topology_version != normalized.topology_version) ||
+        (topology_committed_.checksum != normalized.checksum);
+    if (differs_from_staged || differs_from_committed) {
+      const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+      emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                              kLogEvtTopologyLmkNvsLifecycle,
+                              static_cast<int32_t>(normalized.topology_version),
+                              static_cast<int32_t>(normalized.enabled_slot_count),
+                              erased ? "topology_lmk_nvs_purge_old" : "topology_lmk_nvs_purge_old_failed");
+    }
+  }
+
   const TopologySnapshot old_staged = topology_staged_;
   const bool had_staged = has_topology_staged_;
   topology_staged_ = normalized;
@@ -1582,6 +1732,9 @@ bool EspNowManager::commitStagedTopology(std::string* out_error) {
 
   TopologySnapshot normalized = topology_staged_;
   normalized.state = TopologyState::Committed;
+  // Commit changes topology state from staged->committed.
+  // Recompute checksum in committed context during validation.
+  normalized.checksum = 0U;
   if (!validateTopologySnapshot_(normalized, out_error)) {
     return false;
   }
@@ -1596,6 +1749,22 @@ bool EspNowManager::commitStagedTopology(std::string* out_error) {
   const TopologySnapshot old_committed = topology_committed_;
   const bool had_committed = has_topology_committed_;
   const std::vector<MacAddress> old_attached = topology_attached_peers_;
+  std::vector<uint8_t> old_lmk_blob{};
+  const bool had_old_lmk_blob =
+      (config_.local_role == Role::Slave &&
+       store_ != nullptr &&
+       store_->enabled() &&
+       loadLocalMetaBlob(kTopologyMetaSlotLmk, old_lmk_blob));
+  auto restore_old_lmk_meta = [&]() {
+    if (config_.local_role != Role::Slave || store_ == nullptr || !store_->enabled()) {
+      return;
+    }
+    if (had_old_lmk_blob && !old_lmk_blob.empty()) {
+      (void)saveLocalMetaBlob(kTopologyMetaSlotLmk, old_lmk_blob.data(), old_lmk_blob.size());
+      return;
+    }
+    (void)eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+  };
 
   if (config_.local_role == Role::Slave) {
     std::string apply_error{};
@@ -1613,6 +1782,7 @@ bool EspNowManager::commitStagedTopology(std::string* out_error) {
         std::string rollback_error{};
         (void)materializeTopologyPeers_(old_committed, &rollback_error);
       }
+      restore_old_lmk_meta();
       if (out_error != nullptr) {
         *out_error = "topology_persist_failed";
       }
@@ -1631,6 +1801,7 @@ bool EspNowManager::commitStagedTopology(std::string* out_error) {
         std::string rollback_error{};
         (void)materializeTopologyPeers_(old_committed, &rollback_error);
       }
+      restore_old_lmk_meta();
     }
     if (out_error != nullptr) {
       *out_error = "topology_persist_failed";
@@ -1775,6 +1946,13 @@ bool EspNowManager::sendTopologyTrigger(const TopologyTriggerRequest& request,
     }
     return false;
   }
+  std::string peer_ready_error{};
+  if (!ensureTopologyPeerReadyForSlot_(slot, &peer_ready_error)) {
+    if (out_error != nullptr) {
+      *out_error = peer_ready_error.empty() ? "peer_not_ready" : peer_ready_error;
+    }
+    return false;
+  }
   trigger.direction = request.direction;
   trigger.delay_ms = request.delay_ms;
   trigger.hold_ms = request.hold_ms;
@@ -1793,9 +1971,158 @@ bool EspNowManager::sendTopologyTrigger(const TopologyTriggerRequest& request,
                  (static_cast<uint32_t>(static_cast<uint8_t>(request.target_index)) << 16) |
                  trigger.seq);
   }
-  if (!sendTyped(slot.peer, MessageType::TopologyTrigger, payload.data(), payload.size(), send_corr)) {
+  std::string send_error{};
+  if (!sendTyped(slot.peer,
+                 MessageType::TopologyTrigger,
+                 payload.data(),
+                 payload.size(),
+                 send_corr,
+                 0,
+                 0,
+                 0,
+                 &send_error)) {
     if (out_error != nullptr) {
-      *out_error = "send_failed";
+      *out_error = send_error.empty() ? "send_failed" : send_error;
+    }
+    return false;
+  }
+
+  if (out_seq != nullptr) {
+    *out_seq = trigger.seq;
+  }
+  return true;
+}
+
+bool EspNowManager::sendTopologyTriggerBatch(const TopologyTriggerBatchRequest& request,
+                                             uint32_t corr_id,
+                                             uint16_t* out_seq,
+                                             std::string* out_error) {
+  if (!has_topology_committed_) {
+    if (out_error != nullptr) {
+      *out_error = "topology_missing";
+    }
+    return false;
+  }
+  if (request.entries.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "batch_empty";
+    }
+    return false;
+  }
+  if (request.direction != 1U && request.direction != 2U) {
+    if (out_error != nullptr) {
+      *out_error = "invalid_direction";
+    }
+    return false;
+  }
+  if (request.source_virtual_index != 0xFFU && request.source_virtual_index > 0x0FU) {
+    if (out_error != nullptr) {
+      *out_error = "invalid_source_virtual_index";
+    }
+    return false;
+  }
+  if (local_profile_id_ == kProfileUnknown) {
+    if (out_error != nullptr) {
+      *out_error = "local_profile_unknown";
+    }
+    return false;
+  }
+
+  TopologySlot first_slot{};
+  bool have_first_slot = false;
+  std::vector<manager_helpers::TopologyTriggerBatchItem> items{};
+  items.reserve(request.entries.size());
+
+  for (const auto& entry : request.entries) {
+    if (entry.target_index == 0) {
+      if (out_error != nullptr) {
+        *out_error = "invalid_target_index";
+      }
+      return false;
+    }
+
+    TopologySlot slot{};
+    if (!resolveTopologyTargetIndex(entry.target_index, slot, out_error, true)) {
+      return false;
+    }
+
+    if (!have_first_slot) {
+      first_slot = slot;
+      have_first_slot = true;
+    } else if (slot.peer != first_slot.peer || slot.peer_role != first_slot.peer_role) {
+      if (out_error != nullptr) {
+        *out_error = "batch_multi_peer";
+      }
+      return false;
+    }
+
+    manager_helpers::TopologyTriggerBatchItem item{};
+    item.dst_vid = slot.peer_virtual_index;
+    item.target_index = entry.target_index;
+    item.delay_ms = entry.delay_ms;
+    item.hold_ms = entry.hold_ms;
+    items.push_back(item);
+  }
+
+  if (!have_first_slot || items.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "batch_empty";
+    }
+    return false;
+  }
+
+  const uint8_t src_role = static_cast<uint8_t>(local_profile_id_ & 0xFFU);
+  if (!isTopologyRolePairAllowed(src_role, first_slot.peer_role)) {
+    if (out_error != nullptr) {
+      *out_error = "invalid_role_pair";
+    }
+    return false;
+  }
+
+  std::string peer_ready_error{};
+  if (!ensureTopologyPeerReadyForSlot_(first_slot, &peer_ready_error)) {
+    if (out_error != nullptr) {
+      *out_error = peer_ready_error.empty() ? "peer_not_ready" : peer_ready_error;
+    }
+    return false;
+  }
+
+  manager_helpers::TopologyTriggerBatchPayload trigger{};
+  trigger.topology_version = topology_committed_.topology_version;
+  trigger.seq = topology_trigger_seq_++;
+  if (topology_trigger_seq_ == 0U) {
+    topology_trigger_seq_ = 1U;
+  }
+  trigger.src_role = src_role;
+  trigger.src_vid = request.source_virtual_index;
+  trigger.dst_role = first_slot.peer_role;
+  trigger.direction = request.direction;
+  trigger.items = std::move(items);
+
+  std::vector<uint8_t> payload{};
+  if (!manager_helpers::buildTopologyTriggerBatchPayload(trigger, payload)) {
+    if (out_error != nullptr) {
+      *out_error = "trigger_encode_failed";
+    }
+    return false;
+  }
+
+  uint32_t send_corr = corr_id;
+  if (send_corr == 0U) {
+    send_corr = (0x5A000000U | trigger.seq);
+  }
+  std::string send_error{};
+  if (!sendTyped(first_slot.peer,
+                 MessageType::TopologyTriggerBatch,
+                 payload.data(),
+                 payload.size(),
+                 send_corr,
+                 0,
+                 0,
+                 0,
+                 &send_error)) {
+    if (out_error != nullptr) {
+      *out_error = send_error.empty() ? "send_failed" : send_error;
     }
     return false;
   }
@@ -1984,6 +2311,132 @@ bool EspNowManager::onRxTopologyTrigger(const MacAddress& from,
   return true;
 }
 
+bool EspNowManager::onRxTopologyTriggerBatch(const MacAddress& from,
+                                             const FrameHeader& header,
+                                             const uint8_t* payload,
+                                             size_t payload_len) {
+  if (config_.local_role != Role::Slave) {
+    return false;
+  }
+
+  manager_helpers::TopologyTriggerBatchPayload trigger{};
+  if (!manager_helpers::parseTopologyTriggerBatchPayload(payload, payload_len, trigger)) {
+    return false;
+  }
+  (void)peer_registry_.updateLiveness(from, true, current_now_ms_);
+
+  uint8_t reason = kTopologyTriggerReasonOk;
+  bool accepted = false;
+  bool duplicate = false;
+  std::vector<TopologySlot> authorized_slots{};
+  const uint8_t local_role = static_cast<uint8_t>(local_profile_id_ & 0xFFU);
+
+  if (!has_topology_committed_ || trigger.topology_version != topology_committed_.topology_version) {
+    reason = kTopologyTriggerReasonStaleTopology;
+  } else if (local_profile_id_ == kProfileUnknown || trigger.dst_role != local_role) {
+    reason = kTopologyTriggerReasonUnauthorizedPeer;
+  } else if (!isTopologyRolePairAllowed(local_role, trigger.src_role)) {
+    reason = kTopologyTriggerReasonUnauthorizedPeer;
+  } else if ((trigger.src_vid != 0xFFU && trigger.src_vid > 0x0FU) ||
+             trigger.items.empty()) {
+    reason = kTopologyTriggerReasonBadIndex;
+  } else if (trigger.direction != 1U && trigger.direction != 2U) {
+    reason = kTopologyTriggerReasonRangeRejected;
+  } else if (isTopologyTriggerDuplicate_(from, trigger.src_role, trigger.src_vid, trigger.seq)) {
+    accepted = true;
+    duplicate = true;
+  } else {
+    authorized_slots.reserve(trigger.items.size());
+    for (const auto& item : trigger.items) {
+      if ((item.dst_vid != 0xFFU && item.dst_vid > 0x0FU) || item.target_index == 0) {
+        reason = kTopologyTriggerReasonBadIndex;
+        break;
+      }
+      TopologySlot slot{};
+      if (!findTopologyAuthorizedSourceSlot_(from,
+                                             trigger.src_role,
+                                             trigger.src_vid,
+                                             item.dst_vid,
+                                             slot)) {
+        reason = kTopologyTriggerReasonUnauthorizedPeer;
+        break;
+      }
+      authorized_slots.push_back(slot);
+    }
+    if (reason == kTopologyTriggerReasonOk) {
+      accepted = true;
+    }
+  }
+
+  if (events_ != nullptr) {
+    Event e{};
+    e.peer = from;
+    e.correlation_id = header.correlation_id;
+    e.event_id = trigger.seq;
+    e.severity = trigger.direction;
+    e.event_value = static_cast<int32_t>(trigger.items.size());
+    e.src_role = trigger.src_role;
+    e.src_vid = trigger.src_vid;
+    e.dst_role = trigger.dst_role;
+    e.dst_vid = 0xFFU;
+    e.direction = trigger.direction;
+    e.reason = reason;
+    e.result = accepted ? kTopologyTriggerResultAccepted : kTopologyTriggerResultRejected;
+    if (accepted && duplicate) {
+      e.type = Event::Type::TopologyTriggerDuplicate;
+      e.message = "topology trigger batch duplicate";
+    } else if (accepted) {
+      e.type = Event::Type::TopologyTriggerReceived;
+      e.message = "topology trigger batch accepted";
+    } else {
+      e.type = Event::Type::TopologyTriggerRejected;
+      e.message = "topology trigger batch rejected";
+      e.severity = reason;
+    }
+    events_->onEvent(e);
+  }
+
+  if (accepted && !duplicate && hooks_ != nullptr) {
+    const size_t item_count = std::min(trigger.items.size(), authorized_slots.size());
+    for (size_t i = 0U; i < item_count; ++i) {
+      const auto& item = trigger.items[i];
+      IPlatformHooks::TopologyTriggerNotification note{};
+      note.source = from;
+      note.seq = trigger.seq;
+      note.src_role = trigger.src_role;
+      note.src_vid = trigger.src_vid;
+      note.dst_role = trigger.dst_role;
+      note.dst_vid = item.dst_vid;
+      note.direction = trigger.direction;
+      note.delay_ms = item.delay_ms;
+      note.hold_ms = item.hold_ms;
+      hooks_->onTopologyTrigger(note);
+    }
+  }
+
+  manager_helpers::TopologyTriggerAckPayload ack{};
+  ack.topology_version = has_topology_committed_ ? topology_committed_.topology_version : trigger.topology_version;
+  ack.seq = trigger.seq;
+  ack.src_role = local_role;
+  ack.src_vid = 0xFFU;
+  ack.dst_role = trigger.src_role;
+  ack.dst_vid = trigger.src_vid;
+  ack.ack_seq = trigger.seq;
+  ack.result = accepted ? kTopologyTriggerResultAccepted : kTopologyTriggerResultRejected;
+  ack.reason = accepted ? kTopologyTriggerReasonOk : reason;
+
+  std::vector<uint8_t> ack_payload{};
+  if (manager_helpers::buildTopologyTriggerAckPayload(ack, ack_payload)) {
+    (void)sendTyped(from,
+                    MessageType::TopologyTriggerAck,
+                    ack_payload.data(),
+                    ack_payload.size(),
+                    header.correlation_id);
+  }
+  blinkForMessage(header.type);
+  return true;
+}
+
 bool EspNowManager::onRxTopologyTriggerAck(const MacAddress& from,
                                            const FrameHeader& header,
                                            const uint8_t* payload,
@@ -2127,6 +2580,7 @@ bool EspNowManager::validateTopologySnapshot_(TopologySnapshot& inout_snapshot, 
       }
       if (slot.peer == other.peer &&
           slot.peer_role == other.peer_role &&
+          slot.local_virtual_index == other.local_virtual_index &&
           slot.peer_virtual_index == other.peer_virtual_index) {
         if (out_error != nullptr) {
           *out_error = "duplicate_logical_peer";
@@ -2342,7 +2796,216 @@ bool EspNowManager::deriveTopologySlotLmk_(const TopologySnapshot& snapshot,
   return true;
 }
 
-bool EspNowManager::materializeTopologyPeers_(const TopologySnapshot& snapshot, std::string* out_error) {
+bool EspNowManager::loadTopologyLmkMeta_(TopologyPersistedLmkMeta_& out_meta,
+                                         std::string* out_error) {
+  out_meta = TopologyPersistedLmkMeta_{};
+  if (store_ == nullptr || !store_->enabled()) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_disabled";
+    }
+    return false;
+  }
+
+  std::vector<uint8_t> blob{};
+  if (!loadLocalMetaBlob(kTopologyMetaSlotLmk, blob)) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_miss";
+    }
+    return false;
+  }
+  if (blob.size() < 2U) {
+    const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+    emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(kTopologyMetaSlotLmk),
+                            0,
+                            erased ? "topology_lmk_nvs_invalid_purged"
+                                   : "topology_lmk_nvs_invalid_purge_failed");
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_invalid";
+    }
+    return false;
+  }
+
+  const uint8_t version = blob[0U];
+  const uint8_t count = blob[1U];
+
+  size_t off = 0U;
+  if (version == kTopologyLmkBlobVersionV2) {
+    const size_t expected = kTopologyLmkBlobHeaderSizeV2 + (static_cast<size_t>(count) * kTopologyLmkBlobEntrySize);
+    if (blob.size() != expected || blob.size() < kTopologyLmkBlobHeaderSizeV2) {
+      const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+      emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                              kLogEvtTopologyLmkNvsLifecycle,
+                              static_cast<int32_t>(kTopologyMetaSlotLmk),
+                              0,
+                              erased ? "topology_lmk_nvs_invalid_purged"
+                                     : "topology_lmk_nvs_invalid_purge_failed");
+      if (out_error != nullptr) {
+        *out_error = "topology_lmk_nvs_invalid";
+      }
+      return false;
+    }
+    if (!readU32Le(blob.data() + 2U, blob.size() - 2U, out_meta.topology_version) ||
+        !readU32Le(blob.data() + 6U, blob.size() - 6U, out_meta.topology_checksum)) {
+      const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+      emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                              kLogEvtTopologyLmkNvsLifecycle,
+                              static_cast<int32_t>(kTopologyMetaSlotLmk),
+                              0,
+                              erased ? "topology_lmk_nvs_invalid_purged"
+                                     : "topology_lmk_nvs_invalid_purge_failed");
+      if (out_error != nullptr) {
+        *out_error = "topology_lmk_nvs_invalid";
+      }
+      return false;
+    }
+    std::memcpy(out_meta.master_mac.data(), blob.data() + 10U, out_meta.master_mac.size());
+    std::memcpy(out_meta.local_mac.data(), blob.data() + 16U, out_meta.local_mac.size());
+    out_meta.local_profile = blob[22U];
+    off = kTopologyLmkBlobHeaderSizeV2;
+  } else {
+    const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+    emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(kTopologyMetaSlotLmk),
+                            0,
+                            erased ? "topology_lmk_nvs_invalid_version_purged"
+                                   : "topology_lmk_nvs_invalid_version_purge_failed");
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_version_invalid";
+    }
+    return false;
+  }
+
+  out_meta.entries.clear();
+  out_meta.entries.reserve(count);
+  for (uint8_t i = 0U; i < count; ++i) {
+    if ((off + kTopologyLmkBlobEntrySize) > blob.size()) {
+      const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+      emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                              kLogEvtTopologyLmkNvsLifecycle,
+                              static_cast<int32_t>(kTopologyMetaSlotLmk),
+                              0,
+                              erased ? "topology_lmk_nvs_invalid_purged"
+                                     : "topology_lmk_nvs_invalid_purge_failed");
+      if (out_error != nullptr) {
+        *out_error = "topology_lmk_nvs_invalid";
+      }
+      return false;
+    }
+    TopologyPersistedLmkEntry_ entry{};
+    std::memcpy(entry.peer.data(), blob.data() + off, entry.peer.size());
+    off += entry.peer.size();
+    std::memcpy(entry.lmk.data(), blob.data() + off, entry.lmk.size());
+    off += entry.lmk.size();
+    entry.group_id = blob[off++];
+    out_meta.entries.push_back(entry);
+  }
+  if (off != blob.size()) {
+    const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+    emitTopologyRuntimeLog_(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(kTopologyMetaSlotLmk),
+                            0,
+                            erased ? "topology_lmk_nvs_invalid_purged"
+                                   : "topology_lmk_nvs_invalid_purge_failed");
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_invalid";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool EspNowManager::validateTopologyLmkMeta_(const TopologyPersistedLmkMeta_& meta,
+                                             const TopologySnapshot& snapshot,
+                                             const MacAddress& paired_master,
+                                             std::string* out_error) const {
+  if (meta.entries.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_empty";
+    }
+    return false;
+  }
+  if (meta.topology_version != snapshot.topology_version) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_version_mismatch";
+    }
+    return false;
+  }
+  if (meta.topology_checksum != snapshot.checksum) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_checksum_mismatch";
+    }
+    return false;
+  }
+  if (meta.master_mac != paired_master) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_master_mismatch";
+    }
+    return false;
+  }
+  if (meta.local_mac != local_mac_) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_local_mismatch";
+    }
+    return false;
+  }
+  const uint8_t local_profile_code = static_cast<uint8_t>(local_profile_id_ & 0xFFU);
+  if (meta.local_profile == 0U || meta.local_profile != local_profile_code) {
+    if (out_error != nullptr) {
+      *out_error = "topology_lmk_nvs_profile_mismatch";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool EspNowManager::findSlotLmkFromNvs_(const TopologySlot& slot,
+                                        const TopologyPersistedLmkMeta_& meta,
+                                        LmkKey& out_lmk) const {
+  out_lmk = LmkKey{};
+  for (const auto& entry : meta.entries) {
+    if (entry.peer == slot.peer) {
+      out_lmk = entry.lmk;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool EspNowManager::buildDesiredTopologyPeersFromNvs_(const TopologySnapshot& snapshot,
+                                                      const TopologyPersistedLmkMeta_& meta,
+                                                      std::map<MacAddress, LmkKey>& out_desired,
+                                                      std::string* out_error) const {
+  out_desired.clear();
+  for (const auto& slot : snapshot.slots) {
+    if (!slot.enabled) {
+      continue;
+    }
+    LmkKey slot_lmk{};
+    if (!findSlotLmkFromNvs_(slot, meta, slot_lmk)) {
+      if (out_error != nullptr) {
+        *out_error = "topology_lmk_missing";
+      }
+      return false;
+    }
+    auto it = out_desired.find(slot.peer);
+    if (it == out_desired.end()) {
+      out_desired[slot.peer] = slot_lmk;
+    } else if (it->second != slot_lmk) {
+      if (out_error != nullptr) {
+        *out_error = "topology_lmk_conflict";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+bool EspNowManager::applyTopologyDesiredPeers_(const std::map<MacAddress, LmkKey>& desired,
+                                               std::string* out_error) {
   if (config_.local_role != Role::Slave) {
     return true;
   }
@@ -2353,13 +3016,149 @@ bool EspNowManager::materializeTopologyPeers_(const TopologySnapshot& snapshot, 
     return false;
   }
 
-  struct DesiredPeer {
-    MacAddress mac{};
-    LmkKey lmk{};
-    uint8_t group_id = 0;
+  MacAddress active_peer{};
+  const bool has_active_peer = pairing_.getPairedPeer(active_peer);
+
+  for (const auto& kv : desired) {
+    if (has_active_peer && kv.first == active_peer) {
+      continue;
+    }
+    if (!peer_window_->requestAttach(kv.first, true, &kv.second)) {
+      if (out_error != nullptr) {
+        *out_error = "topology_attach_failed";
+      }
+      return false;
+    }
+  }
+
+  for (const auto& old_peer : topology_attached_peers_) {
+    if (has_active_peer && old_peer == active_peer) {
+      continue;
+    }
+    if (desired.find(old_peer) != desired.end()) {
+      continue;
+    }
+    if (!peer_window_->requestEvict(old_peer)) {
+      if (out_error != nullptr) {
+        *out_error = "topology_evict_failed";
+      }
+      return false;
+    }
+  }
+
+  std::vector<MacAddress> next_attached{};
+  next_attached.reserve(desired.size());
+  for (const auto& kv : desired) {
+    if (has_active_peer && kv.first == active_peer) {
+      continue;
+    }
+    next_attached.push_back(kv.first);
+  }
+  topology_attached_peers_ = std::move(next_attached);
+  return true;
+}
+
+bool EspNowManager::ensureTopologyPeerReadyForSlot_(const TopologySlot& slot, std::string* out_error) {
+  auto fail_peer_ready = [&](const char* reason) {
+    noteTopologyPeerReadyFailure_(reason);
+    emitTopologyRuntimeLog_(LibraryLogLevel::Warn,
+                            kLogEvtTopologyPeerReady,
+                            static_cast<int32_t>(slot.relative_index),
+                            static_cast<int32_t>(topology_peer_ready_fail_count_),
+                            reason);
+    if (out_error != nullptr) {
+      *out_error = (reason != nullptr && reason[0] != '\0') ? reason : "peer_not_ready";
+    }
+    return false;
   };
 
-  std::map<MacAddress, DesiredPeer> peer_choice{};
+  if (config_.local_role != Role::Slave) {
+    return true;
+  }
+  if (!slot.enabled) {
+    return fail_peer_ready("index_unmapped");
+  }
+  if (peer_window_ == nullptr) {
+    return fail_peer_ready("peer_not_ready");
+  }
+
+  MacAddress active_peer{};
+  if (pairing_.getPairedPeer(active_peer) && active_peer == slot.peer) {
+    if (out_error != nullptr) {
+      *out_error = "ok";
+    }
+    return true;
+  }
+
+  MacAddress paired_master{};
+  if (!resolveTopologyMasterMac_(paired_master)) {
+    return fail_peer_ready("pair_missing");
+  }
+  if (!has_topology_committed_) {
+    return fail_peer_ready("topology_missing");
+  }
+
+  LmkKey resolved_lmk{};
+  bool have_lmk = false;
+  bool used_fallback_derive = false;
+
+  TopologyPersistedLmkMeta_ meta{};
+  std::string meta_error{};
+  if (loadTopologyLmkMeta_(meta, &meta_error) &&
+      validateTopologyLmkMeta_(meta, topology_committed_, paired_master, &meta_error) &&
+      findSlotLmkFromNvs_(slot, meta, resolved_lmk)) {
+    have_lmk = true;
+    emitTopologyRuntimeLog_(LibraryLogLevel::Info,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(slot.relative_index),
+                            static_cast<int32_t>(topology_committed_.topology_version),
+                            "topology_lmk_nvs_hit");
+  } else {
+    emitTopologyRuntimeLog_(LibraryLogLevel::Warn,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(slot.relative_index),
+                            static_cast<int32_t>(topology_committed_.topology_version),
+                            meta_error.empty() ? "topology_lmk_nvs_miss" : meta_error.c_str());
+  }
+
+  if (!have_lmk) {
+    std::string derive_error{};
+    if (!deriveTopologySlotLmk_(topology_committed_, slot, resolved_lmk, &derive_error)) {
+      return fail_peer_ready(derive_error.empty() ? "topology_lmk_missing" : derive_error.c_str());
+    }
+    have_lmk = true;
+    used_fallback_derive = true;
+    emitTopologyRuntimeLog_(LibraryLogLevel::Info,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            static_cast<int32_t>(slot.relative_index),
+                            static_cast<int32_t>(topology_committed_.topology_version),
+                            "topology_lmk_nvs_fallback_derive");
+  }
+
+  if (!have_lmk || !peer_window_->requestAttach(slot.peer, true, &resolved_lmk)) {
+    return fail_peer_ready("peer_attach_failed");
+  }
+
+  if (used_fallback_derive) {
+    (void)saveTopologyLmkMeta_(topology_committed_);
+  }
+
+  emitTopologyRuntimeLog_(LibraryLogLevel::Info,
+                          kLogEvtTopologyPeerReady,
+                          static_cast<int32_t>(slot.relative_index),
+                          static_cast<int32_t>(used_fallback_derive ? 1 : 0),
+                          used_fallback_derive ? "topology_trigger_peer_ready_ok_fallback" : "topology_trigger_peer_ready_ok");
+  if (out_error != nullptr) {
+    *out_error = "ok";
+  }
+  return true;
+}
+
+bool EspNowManager::materializeTopologyPeers_(const TopologySnapshot& snapshot, std::string* out_error) {
+  if (config_.local_role != Role::Slave) {
+    return true;
+  }
+  std::map<MacAddress, std::pair<LmkKey, uint8_t>> peer_choice{};
   for (const auto& slot : snapshot.slots) {
     if (!slot.enabled) {
       continue;
@@ -2374,72 +3173,42 @@ bool EspNowManager::materializeTopologyPeers_(const TopologySnapshot& snapshot, 
     }
 
     auto it = peer_choice.find(slot.peer);
-    if (it == peer_choice.end() || slot.group_id < it->second.group_id) {
-      DesiredPeer chosen{};
-      chosen.mac = slot.peer;
-      chosen.group_id = slot.group_id;
-      chosen.lmk = slot_lmk;
-      peer_choice[slot.peer] = chosen;
-    } else if (slot.group_id == it->second.group_id && it->second.lmk != slot_lmk) {
+    if (it == peer_choice.end() || slot.group_id < it->second.second) {
+      peer_choice[slot.peer] = std::make_pair(slot_lmk, slot.group_id);
+    } else if (slot.group_id == it->second.second && it->second.first != slot_lmk) {
       if (out_error != nullptr) {
         *out_error = "topology_lmk_conflict";
       }
       return false;
     }
   }
-
-  std::vector<DesiredPeer> desired{};
-  desired.reserve(peer_choice.size());
+  std::map<MacAddress, LmkKey> desired{};
   for (const auto& kv : peer_choice) {
-    desired.push_back(kv.second);
+    desired[kv.first] = kv.second.first;
   }
-
-  MacAddress active_peer{};
-  const bool has_active_peer = pairing_.getPairedPeer(active_peer);
-
-  for (const auto& peer : desired) {
-    if (has_active_peer && peer.mac == active_peer) {
-      continue;
-    }
-    if (!peer_window_->requestAttach(peer.mac, true, &peer.lmk)) {
-      if (out_error != nullptr) {
-        *out_error = "topology_attach_failed";
-      }
-      return false;
-    }
-  }
-
-  for (const auto& old_peer : topology_attached_peers_) {
-    if (has_active_peer && old_peer == active_peer) {
-      continue;
-    }
-    const bool still_needed =
-        std::any_of(desired.begin(), desired.end(), [&](const DesiredPeer& p) { return p.mac == old_peer; });
-    if (!still_needed) {
-      if (!peer_window_->requestEvict(old_peer)) {
-        if (out_error != nullptr) {
-          *out_error = "topology_evict_failed";
-        }
-        return false;
-      }
-    }
-  }
-
-  std::vector<MacAddress> next_attached{};
-  next_attached.reserve(desired.size());
-  for (const auto& peer : desired) {
-    if (has_active_peer && peer.mac == active_peer) {
-      continue;
-    }
-    next_attached.push_back(peer.mac);
-  }
-  topology_attached_peers_ = std::move(next_attached);
-  return true;
+  return applyTopologyDesiredPeers_(desired, out_error);
 }
 
 bool EspNowManager::saveTopologyLmkMeta_(const TopologySnapshot& snapshot) {
   if (store_ == nullptr || !store_->enabled()) {
     return true;
+  }
+  auto log_lmk_meta = [&](LibraryLogLevel level, const char* reason, int32_t entry_count) {
+    emitTopologyRuntimeLog_(level,
+                            kLogEvtTopologyLmkNvsLifecycle,
+                            entry_count,
+                            static_cast<int32_t>(snapshot.topology_version),
+                            reason);
+  };
+  MacAddress paired_master{};
+  if (!resolveTopologyMasterMac_(paired_master)) {
+    log_lmk_meta(LibraryLogLevel::Warn, "topology_lmk_master_missing", 0);
+    return false;
+  }
+  const uint8_t local_profile_code = static_cast<uint8_t>(local_profile_id_ & 0xFFU);
+  if (local_profile_code == 0U) {
+    log_lmk_meta(LibraryLogLevel::Warn, "topology_lmk_local_profile_missing", 0);
+    return false;
   }
 
   struct PersistedLmk {
@@ -2456,6 +3225,9 @@ bool EspNowManager::saveTopologyLmkMeta_(const TopologySnapshot& snapshot) {
     LmkKey slot_lmk{};
     std::string derive_error{};
     if (!deriveTopologySlotLmk_(snapshot, slot, slot_lmk, &derive_error)) {
+      log_lmk_meta(LibraryLogLevel::Warn,
+                   derive_error.empty() ? "topology_lmk_derive_failed" : derive_error.c_str(),
+                   0);
       return false;
     }
     auto it = peer_choice.find(slot.peer);
@@ -2466,6 +3238,7 @@ bool EspNowManager::saveTopologyLmkMeta_(const TopologySnapshot& snapshot) {
       entry.lmk = slot_lmk;
       peer_choice[slot.peer] = entry;
     } else if (slot.group_id == it->second.group_id && it->second.lmk != slot_lmk) {
+      log_lmk_meta(LibraryLogLevel::Warn, "topology_lmk_conflict", 0);
       return false;
     }
   }
@@ -2477,22 +3250,36 @@ bool EspNowManager::saveTopologyLmkMeta_(const TopologySnapshot& snapshot) {
   }
 
   if (persisted.empty()) {
-    return eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+    const bool erased = eraseLocalMetaBlob(kTopologyMetaSlotLmk);
+    log_lmk_meta(erased ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+                 erased ? "topology_lmk_nvs_purge_old" : "topology_lmk_nvs_purge_old_failed",
+                 0);
+    return erased;
   }
   if (persisted.size() > 255U) {
+    log_lmk_meta(LibraryLogLevel::Warn, "topology_lmk_nvs_too_many_entries", 0);
     return false;
   }
 
   std::vector<uint8_t> blob{};
-  blob.reserve(2U + persisted.size() * kTopologyLmkBlobEntrySize);
-  blob.push_back(kTopologyLmkBlobVersion);
+  blob.reserve(kTopologyLmkBlobHeaderSizeV2 + persisted.size() * kTopologyLmkBlobEntrySize);
+  blob.push_back(kTopologyLmkBlobVersionV2);
   blob.push_back(static_cast<uint8_t>(persisted.size()));
+  appendU32Le(blob, snapshot.topology_version);
+  appendU32Le(blob, snapshot.checksum);
+  blob.insert(blob.end(), paired_master.begin(), paired_master.end());
+  blob.insert(blob.end(), local_mac_.begin(), local_mac_.end());
+  blob.push_back(local_profile_code);
   for (const auto& entry : persisted) {
     blob.insert(blob.end(), entry.peer.begin(), entry.peer.end());
     blob.insert(blob.end(), entry.lmk.begin(), entry.lmk.end());
     blob.push_back(entry.group_id);
   }
-  return saveLocalMetaBlob(kTopologyMetaSlotLmk, blob.data(), blob.size());
+  const bool saved = saveLocalMetaBlob(kTopologyMetaSlotLmk, blob.data(), blob.size());
+  log_lmk_meta(saved ? LibraryLogLevel::Info : LibraryLogLevel::Warn,
+               saved ? "topology_lmk_nvs_write_ok" : "topology_lmk_nvs_write_fail",
+               static_cast<int32_t>(persisted.size()));
+  return saved;
 }
 
 void EspNowManager::tick(uint32_t now_ms) {
@@ -2670,6 +3457,8 @@ bool EspNowManager::processQueuedControlRx_(const QueuedControlRx& frame) {
       return onRxEventReport(frame.from, header, payload, payload_len);
     case MessageType::TopologyTrigger:
       return onRxTopologyTrigger(frame.from, header, payload, payload_len);
+    case MessageType::TopologyTriggerBatch:
+      return onRxTopologyTriggerBatch(frame.from, header, payload, payload_len);
     case MessageType::TopologyTriggerAck:
       return onRxTopologyTriggerAck(frame.from, header, payload, payload_len);
     case MessageType::ChannelSwitchPrepare:
@@ -3553,7 +4342,8 @@ bool EspNowManager::sendTyped(const MacAddress& to,
                               uint32_t corr_id,
                               uint8_t wire_service,
                               uint8_t wire_op,
-                              uint8_t wire_msg_type) {
+                              uint8_t wire_msg_type,
+                              std::string* out_error) {
 #if ESPNOW_LINK_ENABLE_RUNTIME_METRICS
   ScopedMetricsDuration tx_duration(&metrics_.tx_send_total_us,
                                     &metrics_.tx_send_last_us,
@@ -3586,6 +4376,9 @@ bool EspNowManager::sendTyped(const MacAddress& to,
 #if ESPNOW_LINK_ENABLE_RUNTIME_METRICS
     ++metrics_.tx_failures;
 #endif
+    if (out_error != nullptr) {
+      *out_error = "encode_failed";
+    }
     if (hooks_ != nullptr) {
       hooks_->onTxFrame(to, type, corr_id, wire_len, false);
     }
@@ -3615,6 +4408,9 @@ bool EspNowManager::sendTyped(const MacAddress& to,
     hooks_->onTxFrame(to, type, corr_id, wire_len, ok);
   }
   if (!ok) {
+    if (out_error != nullptr) {
+      *out_error = "transport_send_failed";
+    }
     emitRuntimeLog(LibraryLogLevel::Error,
                    kLogEvtTxSendFail,
                    corr_id,
@@ -3622,6 +4418,9 @@ bool EspNowManager::sendTyped(const MacAddress& to,
                    static_cast<int32_t>(wire_len),
                    to.data(),
                    to.size());
+  }
+  if (ok && out_error != nullptr) {
+    *out_error = "ok";
   }
   return ok;
 }
@@ -3660,6 +4459,9 @@ void EspNowManager::blinkForMessage(MessageType type) {
       break;
     case MessageType::TopologyTrigger:
       hooks_->onRgbBlink(0, 180, 255, 45);
+      break;
+    case MessageType::TopologyTriggerBatch:
+      hooks_->onRgbBlink(0, 200, 255, 50);
       break;
     case MessageType::TopologyTriggerAck:
       hooks_->onRgbBlink(0, 120, 220, 35);

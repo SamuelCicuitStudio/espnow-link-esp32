@@ -84,7 +84,7 @@ std::vector<espnow_link::ProfileTelemetryMetricSpec> buildPmsTelemetrySpec() {
 
 std::vector<espnow_link::ProfileSettingSpec> buildPmsSettingSpec() {
   std::vector<espnow_link::ProfileSettingSpec> out;
-  out.reserve(21);
+  out.reserve(22);
   espnow_link::ProfileSettingSpec s{};
   s.setting_id = 0x0001;
   s.key = PCAT_PMS_SET_DNAME;
@@ -112,6 +112,9 @@ std::vector<espnow_link::ProfileSettingSpec> buildPmsSettingSpec() {
   out.push_back(s);
   s.setting_id = 0x0107;
   s.key = PCAT_PMS_SET_LEDFB;
+  out.push_back(s);
+  s.setting_id = 0x010E;
+  s.key = PCAT_PMS_SET_CLIBD;
   out.push_back(s);
   s.setting_id = 0x010B;
   s.key = PCAT_PMS_SET_RGBIDL;
@@ -416,6 +419,18 @@ bool PmsAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDescr
   out.push_back(s);
 
   s = espnow_link::SettingDescriptor{};
+  s.setting_id = 0x010E;
+  s.key = PCAT_PMS_SET_CLIBD;
+  s.value_type = espnow_link::SettingValueType::Int;
+  s.writable = true;
+  s.nvs_key = PCAT_PMS_KEY_CLIBD;
+  s.current_value =
+      std::to_string(static_cast<unsigned long>(loadU32_(PCAT_PMS_KEY_CLIBD, static_cast<uint32_t>(PCAT_PMS_SET_CLIBD_DEF))));
+  s.default_value = std::to_string(static_cast<unsigned long>(PCAT_PMS_SET_CLIBD_DEF));
+  s.description = PCAT_PMS_DESC_SET_CLIBD;
+  out.push_back(s);
+
+  s = espnow_link::SettingDescriptor{};
   s.setting_id = 0x0107;
   s.key = PCAT_PMS_SET_LEDFB;
   s.value_type = espnow_link::SettingValueType::Bool;
@@ -583,6 +598,30 @@ bool PmsAppDescriptorProvider::getSetting(const std::string& key, espnow_link::S
   return false;
 }
 
+bool parseU32(const std::string& value, uint32_t& out) {
+  if (value.empty()) {
+    return false;
+  }
+  char* endp = nullptr;
+  const unsigned long parsed = std::strtoul(value.c_str(), &endp, 10);
+  if (endp == nullptr || *endp != '\0') {
+    return false;
+  }
+  out = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool isSupportedCliBaud(const uint32_t baud) {
+  static constexpr uint32_t kSupported[] = {
+      9600U, 19200U, 38400U, 57600U, 74880U, 115200U, 230400U, 250000U, 460800U, 921600U};
+  for (const uint32_t candidate : kSupported) {
+    if (baud == candidate) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool PmsAppDescriptorProvider::getSettingById(uint16_t setting_id, espnow_link::SettingDescriptor& out) {
   const espnow_link::ProfileSettingSpec* spec = espnow_link::findProfileSettingById(&pmsProfileDefinition(), setting_id);
   if (spec == nullptr || spec->key == nullptr || spec->key[0] == '\0') {
@@ -619,6 +658,20 @@ bool PmsAppDescriptorProvider::setSetting(const std::string& key, const std::str
                                        static_cast<long>(PCAT_PMS_SET_CHAN_MAX),
                                        out_message);
     return finalizeSettingChange_(key, value, ok, out_message);
+  }
+
+  if (key == PCAT_PMS_SET_CLIBD) {
+    uint32_t baud = 0U;
+    if (!parseU32(value, baud) || !isSupportedCliBaud(baud)) {
+      out_message = "cli_baud expects one of: 9600|19200|38400|57600|74880|115200|230400|250000|460800|921600";
+      return false;
+    }
+    const bool ok = nvs_.putU32(PCAT_PMS_KEY_CLIBD, baud);
+    out_message = ok ? "cli_baud updated (restart required)" : "cli_baud persist failed";
+    if (cfg_.setting_feedback != nullptr) {
+      cfg_.setting_feedback(cfg_.runtime_user, key, value, ok);
+    }
+    return ok;
   }
   if (key == PCAT_PMS_SET_VBOVP) {
     const bool ok = persistU16Setting_(PCAT_PMS_KEY_VBOVP,
@@ -920,6 +973,12 @@ bool PmsAppDescriptorProvider::applyOtaImage(const std::string& target, std::str
 uint16_t PmsAppDescriptorProvider::loadU16_(const char* key, uint16_t fallback) const {
   uint16_t out = fallback;
   (void)nvs_.getU16(key, out);
+  return out;
+}
+
+uint32_t PmsAppDescriptorProvider::loadU32_(const char* key, uint32_t fallback) const {
+  uint32_t out = fallback;
+  (void)nvs_.getU32(key, out);
   return out;
 }
 

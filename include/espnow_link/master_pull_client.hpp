@@ -72,6 +72,8 @@ class MasterPullClient {
   bool requestTimeSet(const MacAddress& to, uint64_t epoch_s, uint32_t corr_id);
   /** @brief Request settings list from peer. */
   bool requestSettings(const MacAddress& to, uint32_t corr_id);
+  /** @brief Request one bundled node snapshot from peer (mask-selected fields). */
+  bool requestNodeBundle(const MacAddress& to, uint8_t bundle_mask, uint32_t corr_id);
   /** @brief Request one settings page from peer. */
   bool requestSettingsPage(const MacAddress& to, uint16_t cursor, uint8_t page_size, uint32_t corr_id);
   /** @brief Request one setting by key from peer. */

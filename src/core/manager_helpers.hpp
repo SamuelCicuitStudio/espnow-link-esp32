@@ -58,6 +58,8 @@ constexpr uint8_t kTopologyProtoVersion = 1;
 constexpr uint8_t kTopologyMsgTrigger = 0x01;
 /** @brief Topology lateral trigger ack message kind. */
 constexpr uint8_t kTopologyMsgAck = 0x02;
+/** @brief Topology lateral trigger batch message kind. */
+constexpr uint8_t kTopologyMsgTriggerBatch = 0x03;
 
 /** @brief L2 trigger command payload fields. */
 struct TopologyTriggerPayload {
@@ -70,6 +72,25 @@ struct TopologyTriggerPayload {
   uint8_t direction = 0;
   uint16_t delay_ms = 0;
   uint16_t hold_ms = 0;
+};
+
+/** @brief One entry in an L2 trigger batch command payload. */
+struct TopologyTriggerBatchItem {
+  uint8_t dst_vid = 0xFF;
+  int8_t target_index = 0;
+  uint16_t delay_ms = 0;
+  uint16_t hold_ms = 0;
+};
+
+/** @brief L2 trigger batch command payload fields. */
+struct TopologyTriggerBatchPayload {
+  uint32_t topology_version = 0;
+  uint16_t seq = 0;
+  uint8_t src_role = 0;
+  uint8_t src_vid = 0xFF;
+  uint8_t dst_role = 0;
+  uint8_t direction = 0;
+  std::vector<TopologyTriggerBatchItem> items{};
 };
 
 /** @brief L2 trigger ack payload fields. */
@@ -90,6 +111,11 @@ bool buildTopologyTriggerPayload(const TopologyTriggerPayload& in,
 bool parseTopologyTriggerPayload(const uint8_t* payload,
                                  size_t len,
                                  TopologyTriggerPayload& out);
+bool buildTopologyTriggerBatchPayload(const TopologyTriggerBatchPayload& in,
+                                      std::vector<uint8_t>& out_payload);
+bool parseTopologyTriggerBatchPayload(const uint8_t* payload,
+                                      size_t len,
+                                      TopologyTriggerBatchPayload& out);
 bool buildTopologyTriggerAckPayload(const TopologyTriggerAckPayload& in,
                                     std::vector<uint8_t>& out_payload);
 bool parseTopologyTriggerAckPayload(const uint8_t* payload,

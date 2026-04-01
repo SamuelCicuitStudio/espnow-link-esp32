@@ -334,6 +334,7 @@ enum class DescriptorQueryType : uint8_t {
   GetTime,
   SetTime,
   GetSettings,
+  GetNodeBundle,
   GetSetting,
   SetSetting,
   GetLogStatus,
@@ -361,6 +362,19 @@ enum class DescriptorQueryType : uint8_t {
   TopologyTriggerSend,
 };
 
+/** @brief Bundle field mask bits for `DescriptorQueryType::GetNodeBundle`. */
+constexpr uint8_t kNodeBundleMaskDevice = 0x01U;
+constexpr uint8_t kNodeBundleMaskLiveness = 0x02U;
+constexpr uint8_t kNodeBundleMaskTime = 0x04U;
+constexpr uint8_t kNodeBundleMaskSettings = 0x08U;
+constexpr uint8_t kNodeBundleMaskTelemetry = 0x10U;
+constexpr uint8_t kNodeBundleMaskAll = static_cast<uint8_t>(
+    kNodeBundleMaskDevice |
+    kNodeBundleMaskLiveness |
+    kNodeBundleMaskTime |
+    kNodeBundleMaskSettings |
+    kNodeBundleMaskTelemetry);
+
 /** @brief Encoded descriptor query object. */
 struct DescriptorQuery {
   DescriptorQueryType type = DescriptorQueryType::Unknown;
@@ -372,6 +386,7 @@ struct DescriptorQuery {
   bool paged = false;
   uint16_t cursor = 0;
   uint8_t page_size = 0;
+  uint8_t bundle_mask = kNodeBundleMaskAll;
   uint32_t log_offset = 0;
   uint16_t log_max_bytes = 0;
   bool has_log_enable = false;
@@ -411,6 +426,7 @@ enum class DescriptorResponseType : uint8_t {
   TelemetrySnapshot,
   Liveness,
   Time,
+  NodeBundle,
   Settings,
   Setting,
   LogStatus,
@@ -430,6 +446,7 @@ enum class DescriptorResponseType : uint8_t {
 struct DescriptorResponse {
   DescriptorResponseType type = DescriptorResponseType::Unknown;
   std::string message;
+  uint8_t bundle_mask = 0;
   bool is_paged = false;
   uint32_t snapshot_id = 0;
   uint16_t total_count = 0;

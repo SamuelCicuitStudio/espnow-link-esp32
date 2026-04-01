@@ -132,13 +132,22 @@ bool CompactIndexedProfileCodec::encodeDescriptorQuery(const DescriptorQuery& qu
       query.type == DescriptorQueryType::ListStoragePath ||
       query.type == DescriptorQueryType::StatStoragePath ||
       query.type == DescriptorQueryType::FormatStorage ||
+      query.type == DescriptorQueryType::GetNodeBundle ||
       query.type == DescriptorQueryType::GetOtaStatus ||
       query.type == DescriptorQueryType::GetOtaManifest ||
       query.type == DescriptorQueryType::RebuildOtaManifest ||
       query.type == DescriptorQueryType::ClearOtaScope ||
       query.type == DescriptorQueryType::GetOtaCapacity ||
       query.type == DescriptorQueryType::GetOtaGateInfo ||
-      query.type == DescriptorQueryType::ApplyOtaImage) {
+      query.type == DescriptorQueryType::ApplyOtaImage ||
+      query.type == DescriptorQueryType::TopologyStageClear ||
+      query.type == DescriptorQueryType::TopologyStageBegin ||
+      query.type == DescriptorQueryType::TopologyStageSlotSet ||
+      query.type == DescriptorQueryType::TopologyStageGroupSet ||
+      query.type == DescriptorQueryType::TopologyStageFinalize ||
+      query.type == DescriptorQueryType::TopologyCommit ||
+      query.type == DescriptorQueryType::TopologyStatus ||
+      query.type == DescriptorQueryType::TopologyTriggerSend) {
     return ::espnow_link::encodeDescriptorQuery(query, out_payload);
   }
 
@@ -230,6 +239,14 @@ bool CompactIndexedProfileCodec::decodeDescriptorQuery(const uint8_t* payload,
   if (out.type == DescriptorQueryType::SetSetting && out.value.empty()) {
     return false;
   }
+  // Compact query payload does not carry topology TLV fields.
+  // Reject these forms so callers can fall back to the canonical TLV parser.
+  if (out.type == DescriptorQueryType::TopologyStageBegin ||
+      out.type == DescriptorQueryType::TopologyStageSlotSet ||
+      out.type == DescriptorQueryType::TopologyStageGroupSet ||
+      out.type == DescriptorQueryType::TopologyTriggerSend) {
+    return false;
+  }
   return true;
 }
 
@@ -240,6 +257,7 @@ bool CompactIndexedProfileCodec::encodeDescriptorResponse(const DescriptorRespon
       response.type == DescriptorResponseType::StorageInfo ||
       response.type == DescriptorResponseType::StorageList ||
       response.type == DescriptorResponseType::StorageStat ||
+      response.type == DescriptorResponseType::NodeBundle ||
       response.type == DescriptorResponseType::OtaStatus ||
       response.type == DescriptorResponseType::OtaManifest ||
       response.type == DescriptorResponseType::OtaCapacity ||

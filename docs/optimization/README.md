@@ -14,3 +14,6 @@ Scope:
 - `cli3-current-command-contract.md`
 - `execution-goal-lock.md`
 - `profiles-frontend-optimization-structure.md`
+- `slave-settings-cache-policy-and-delta-write-fix-plan.md` (primary cache-policy plan)
+- `slave-settings-cache-first-internal-plan.md` (historical draft, see supersession note)
+- `slave-settings-fetch-api-alignment-plan.md` (NodeBundle transport/API alignment)
