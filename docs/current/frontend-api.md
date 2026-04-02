@@ -56,6 +56,7 @@ Current baseline:
 
 - adapter cache is readable via `cachedSettingResolved` / `cachedSettingsResolved`
 - refresh helpers (`settingsBundleRefresh`, `settingsBundleGet`) can hydrate cache from transport
+- `settingsGetResolved` is cache-first and only triggers a targeted refresh when full cache is not ready
 
 Migration target (library-first policy):
 

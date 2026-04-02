@@ -115,6 +115,9 @@ class PmsAppDescriptorProvider : public espnow_link::IDescriptorProvider, public
                               const std::string& value,
                               bool persisted_ok,
                               std::string& out_message);
+  bool ensureSettingsCache_() const;
+  bool rebuildSettingsCache_(std::vector<espnow_link::SettingDescriptor>& out) const;
+  void invalidateSettingsCache_();
   bool appendTelemetryFromRuntime_(std::vector<espnow_link::TelemetrySample>& out);
 
   espnow_link::PreferencesStore& nvs_;
@@ -123,6 +126,8 @@ class PmsAppDescriptorProvider : public espnow_link::IDescriptorProvider, public
   espnow_link::IStorageExplorerProvider* storage_ = nullptr;
   espnow_link::OtaDescriptorAdapter* ota_ = nullptr;
   PmsDescriptorAppConfig cfg_{};
+  mutable std::vector<espnow_link::SettingDescriptor> settings_cache_{};
+  mutable bool settings_cache_valid_ = false;
 };
 
 class PmsAppProfileDefinition final : public espnow_link::IProfileDefinition {

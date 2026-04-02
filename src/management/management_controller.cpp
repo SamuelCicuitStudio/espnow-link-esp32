@@ -1,12 +1,14 @@
 #include "espnow_link/management_controller.hpp"
 
+#include <utility>
+
 #include "espnow_link/management_utils.hpp"
 
 namespace espnow_link {
 
 ManagementController::SubmitResult ManagementController::submit(
     uint16_t cmd_id,
-    const std::vector<uint8_t>& payload,
+    std::vector<uint8_t> payload,
     const SubmitOptions& options) {
   SubmitResult result{};
   result.cmd_id = cmd_id;
@@ -35,20 +37,20 @@ ManagementController::SubmitResult ManagementController::submit(
     request.target_peer = options.target_peer;
   }
 
-  request.payload = payload;
+  request.payload = std::move(payload);
   result.reject_stage = "queue";
-  result.accepted = queue_transport_->enqueueRequest(request);
+  result.accepted = queue_transport_->enqueueRequest(std::move(request));
   result.status = result.accepted ? ManagementStatus::Ok : ManagementStatus::QueueFull;
   return result;
 }
 
 bool ManagementController::submitCommand_(ManagementCommandId cmd,
-                                          const std::vector<uint8_t>& payload,
+                                          std::vector<uint8_t> payload,
                                           uint32_t* out_req_id,
                                           uint32_t timeout_ms) {
   SubmitOptions options{};
   options.timeout_ms = timeout_ms;
-  const SubmitResult result = submit(static_cast<uint16_t>(cmd), payload, options);
+  const SubmitResult result = submit(static_cast<uint16_t>(cmd), std::move(payload), options);
   if (out_req_id != nullptr) {
     *out_req_id = result.req_id;
   }
@@ -113,7 +115,7 @@ bool ManagementController::topologyTriggerSend(const ManagementTopologyTriggerSe
 
 bool ManagementController::pairRequest(const MacAddress& peer, uint32_t* out_req_id, uint32_t timeout_ms) {
   std::vector<uint8_t> payload(peer.begin(), peer.end());
-  return submitCommand_(ManagementCommandId::PairRequest, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::PairRequest, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::unpairRequest(uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -142,7 +144,7 @@ bool ManagementController::capsPageGet(uint16_t cursor,
   std::vector<uint8_t> payload;
   management_utils::appendU16Le(payload, cursor);
   payload.push_back(page_size);
-  return submitCommand_(ManagementCommandId::CapsPageGet, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::CapsPageGet, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::nodeBundleGet(uint8_t bundle_mask,
@@ -165,7 +167,7 @@ bool ManagementController::settingsPageGet(uint16_t cursor,
   std::vector<uint8_t> payload;
   management_utils::appendU16Le(payload, cursor);
   payload.push_back(page_size);
-  return submitCommand_(ManagementCommandId::SettingsPageGet, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::SettingsPageGet, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::settingGetByKey(const std::string& key, uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -213,7 +215,7 @@ bool ManagementController::telemetrySchemaPageGet(uint16_t cursor,
   std::vector<uint8_t> payload;
   management_utils::appendU16Le(payload, cursor);
   payload.push_back(page_size);
-  return submitCommand_(ManagementCommandId::TelemSchemaPageGet, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::TelemSchemaPageGet, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::telemetryPull(uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -227,7 +229,7 @@ bool ManagementController::telemetryPullPageGet(uint16_t cursor,
   std::vector<uint8_t> payload;
   management_utils::appendU16Le(payload, cursor);
   payload.push_back(page_size);
-  return submitCommand_(ManagementCommandId::TelemPull, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::TelemPull, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::livenessGet(uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -287,7 +289,7 @@ bool ManagementController::pushCommand(const TelemetryPushCommand& cmd, uint32_t
       cmd_id = ManagementCommandId::PushGet;
       break;
   }
-  return submitCommand_(cmd_id, payload, out_req_id, timeout_ms);
+  return submitCommand_(cmd_id, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::pushStart(uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -337,7 +339,7 @@ bool ManagementController::resetMasterRequest(uint32_t* out_req_id, uint32_t tim
 bool ManagementController::cliSetEnabled(bool enabled, uint32_t* out_req_id, uint32_t timeout_ms) {
   std::vector<uint8_t> payload;
   payload.push_back(enabled ? 1U : 0U);
-  return submitCommand_(ManagementCommandId::CliControlSet, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::CliControlSet, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::cliStatusGet(uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -453,7 +455,7 @@ bool ManagementController::otaManifestPageGet(uint16_t cursor,
   std::vector<uint8_t> payload;
   management_utils::appendU16Le(payload, cursor);
   payload.push_back(page_size);
-  return submitCommand_(ManagementCommandId::OtaManifestPageGet, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::OtaManifestPageGet, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::otaManifestRebuild(uint32_t* out_req_id, uint32_t timeout_ms) {
@@ -506,18 +508,18 @@ bool ManagementController::otaTransferChunk(uint32_t offset,
                                             size_t len,
                                             uint32_t* out_req_id,
                                             uint32_t timeout_ms) {
-  const std::vector<uint8_t> payload = management_utils::buildOtaTransferChunkPayload(offset, data, len);
+  std::vector<uint8_t> payload = management_utils::buildOtaTransferChunkPayload(offset, data, len);
   if (payload.empty()) return false;
-  return submitCommand_(ManagementCommandId::OtaTransferChunk, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::OtaTransferChunk, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::otaTransferChunk(uint32_t offset,
                                             const std::vector<uint8_t>& data,
                                             uint32_t* out_req_id,
                                             uint32_t timeout_ms) {
-  const std::vector<uint8_t> payload = management_utils::buildOtaTransferChunkPayload(offset, data);
+  std::vector<uint8_t> payload = management_utils::buildOtaTransferChunkPayload(offset, data);
   if (payload.empty()) return false;
-  return submitCommand_(ManagementCommandId::OtaTransferChunk, payload, out_req_id, timeout_ms);
+  return submitCommand_(ManagementCommandId::OtaTransferChunk, std::move(payload), out_req_id, timeout_ms);
 }
 
 bool ManagementController::otaTransferEnd(uint32_t total_size,

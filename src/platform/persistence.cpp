@@ -19,6 +19,7 @@ constexpr uint8_t kPairSeqSchemaVersion = 1;
 constexpr size_t kPairIndexHeaderBytes = 4;
 constexpr size_t kPairIndexEntryBytes = 11;
 constexpr size_t kPairSeqBlobBytes = 5;
+constexpr size_t kBlobCacheMaxEntries = 256;
 
 void hashByte(uint32_t& h, uint8_t b) {
   h ^= b;
@@ -364,6 +365,37 @@ bool PairingStore::clearPairSeqCounter(const MacAddress& local) {
   return eraseBlobIfExists(pairSeqCounterKey(local));
 }
 
+void PairingStore::markBlobCacheEntryUsed_(BlobCacheEntry& entry) {
+  ++blob_cache_access_seq_;
+  if (blob_cache_access_seq_ == 0U) {
+    blob_cache_access_seq_ = 1U;
+    for (auto& kv : blob_cache_) {
+      kv.second.last_used = 0U;
+    }
+  }
+  entry.last_used = blob_cache_access_seq_;
+}
+
+void PairingStore::enforceBlobCacheLimit_(const std::string* preserve_key) {
+  while (blob_cache_.size() > kBlobCacheMaxEntries) {
+    auto evict_it = blob_cache_.end();
+    uint32_t oldest_used = std::numeric_limits<uint32_t>::max();
+    for (auto it = blob_cache_.begin(); it != blob_cache_.end(); ++it) {
+      if (preserve_key != nullptr && it->first == *preserve_key) {
+        continue;
+      }
+      if (evict_it == blob_cache_.end() || it->second.last_used < oldest_used) {
+        evict_it = it;
+        oldest_used = it->second.last_used;
+      }
+    }
+    if (evict_it == blob_cache_.end()) {
+      break;
+    }
+    blob_cache_.erase(evict_it);
+  }
+}
+
 bool PairingStore::putBlobIfChanged(const std::string& key, const uint8_t* data, size_t len) {
   if (!enabled() || data == nullptr || len == 0) {
     return false;
@@ -371,6 +403,7 @@ bool PairingStore::putBlobIfChanged(const std::string& key, const uint8_t* data,
 
   auto it = blob_cache_.find(key);
   if (it != blob_cache_.end() && it->second.known && it->second.exists) {
+    markBlobCacheEntryUsed_(it->second);
     const auto& cached = it->second.value;
     if (cached.size() == len && std::memcmp(cached.data(), data, len) == 0) {
       return true;
@@ -381,8 +414,10 @@ bool PairingStore::putBlobIfChanged(const std::string& key, const uint8_t* data,
       BlobCacheEntry& entry = blob_cache_[key];
       entry.known = true;
       entry.exists = true;
-      entry.value = existing;
-      if (existing.size() == len && std::memcmp(existing.data(), data, len) == 0) {
+      entry.value = std::move(existing);
+      markBlobCacheEntryUsed_(entry);
+      enforceBlobCacheLimit_(&key);
+      if (entry.value.size() == len && std::memcmp(entry.value.data(), data, len) == 0) {
         return true;
       }
     } else {
@@ -390,6 +425,8 @@ bool PairingStore::putBlobIfChanged(const std::string& key, const uint8_t* data,
       entry.known = true;
       entry.exists = false;
       entry.value.clear();
+      markBlobCacheEntryUsed_(entry);
+      enforceBlobCacheLimit_(&key);
     }
   }
 
@@ -401,6 +438,8 @@ bool PairingStore::putBlobIfChanged(const std::string& key, const uint8_t* data,
   entry.known = true;
   entry.exists = true;
   entry.value.assign(data, data + len);
+  markBlobCacheEntryUsed_(entry);
+  enforceBlobCacheLimit_(&key);
   return true;
 }
 
@@ -411,6 +450,7 @@ bool PairingStore::getBlobCached(const std::string& key, std::vector<uint8_t>& o
 
   auto it = blob_cache_.find(key);
   if (it != blob_cache_.end() && it->second.known) {
+    markBlobCacheEntryUsed_(it->second);
     if (!it->second.exists) {
       return false;
     }
@@ -424,14 +464,18 @@ bool PairingStore::getBlobCached(const std::string& key, std::vector<uint8_t>& o
     entry.known = true;
     entry.exists = false;
     entry.value.clear();
+    markBlobCacheEntryUsed_(entry);
+    enforceBlobCacheLimit_(&key);
     return false;
   }
 
   BlobCacheEntry& entry = blob_cache_[key];
   entry.known = true;
   entry.exists = true;
-  entry.value = blob;
-  out = blob;
+  entry.value = std::move(blob);
+  markBlobCacheEntryUsed_(entry);
+  enforceBlobCacheLimit_(&key);
+  out = entry.value;
   return true;
 }
 
@@ -442,6 +486,7 @@ bool PairingStore::eraseBlobIfExists(const std::string& key) {
 
   auto it = blob_cache_.find(key);
   if (it != blob_cache_.end() && it->second.known && !it->second.exists) {
+    markBlobCacheEntryUsed_(it->second);
     return true;
   }
 
@@ -452,6 +497,8 @@ bool PairingStore::eraseBlobIfExists(const std::string& key) {
       entry.known = true;
       entry.exists = false;
       entry.value.clear();
+      markBlobCacheEntryUsed_(entry);
+      enforceBlobCacheLimit_(&key);
       return true;
     }
   }
@@ -464,6 +511,8 @@ bool PairingStore::eraseBlobIfExists(const std::string& key) {
   entry.known = true;
   entry.exists = false;
   entry.value.clear();
+  markBlobCacheEntryUsed_(entry);
+  enforceBlobCacheLimit_(&key);
   return true;
 }
 

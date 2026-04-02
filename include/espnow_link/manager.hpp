@@ -881,9 +881,16 @@ class EspNowManager {
                                uint32_t corr_id,
                                const char* cause);
   bool buildDescriptorReply(bool ok, const std::string& message, std::vector<uint8_t>& out_payload);
-  bool isKnownTelemetryKey(const std::string& key) const;
-  bool telemetryKeyFromIndex(uint16_t metric_index, std::string& out_key) const;
-  bool resolveTelemetryMetricIdentity(const TelemetryPushMetricConfig& metric, std::string& out_key) const;
+  bool isKnownTelemetryKey(const std::string& key,
+                           const std::vector<TelemetryDescriptor>* schema_cache = nullptr,
+                           const std::vector<TelemetrySample>* snapshot_cache = nullptr) const;
+  bool telemetryKeyFromIndex(uint16_t metric_index,
+                             std::string& out_key,
+                             const std::vector<TelemetryDescriptor>* schema_cache = nullptr) const;
+  bool resolveTelemetryMetricIdentity(const TelemetryPushMetricConfig& metric,
+                                      std::string& out_key,
+                                      const std::vector<TelemetryDescriptor>* schema_cache = nullptr,
+                                      const std::vector<TelemetrySample>* snapshot_cache = nullptr) const;
   bool persistTelemetryPushConfig();
   bool restoreTelemetryPushConfig(const MacAddress& master);
   bool clearTelemetryPushConfig(const MacAddress& master);
@@ -1006,6 +1013,16 @@ class EspNowManager {
   std::deque<QueuedPullResponse> pull_response_queue_{};
   std::deque<QueuedFirmwareRx> firmware_rx_queue_{};
   std::deque<QueuedControlRx> control_rx_queue_{};
+  QueuedPullRequest pull_request_recycle_{};
+  QueuedPullResponse pull_response_recycle_{};
+  QueuedFirmwareRx firmware_rx_recycle_{};
+  QueuedControlRx control_rx_recycle_{};
+  bool has_pull_request_recycle_ = false;
+  bool has_pull_response_recycle_ = false;
+  bool has_firmware_rx_recycle_ = false;
+  bool has_control_rx_recycle_ = false;
+  std::vector<uint8_t> tx_wrapped_payload_scratch_{};
+  std::vector<uint8_t> tx_encoded_frame_scratch_{};
   TelemetryPushSession push_session_{};
   std::vector<TelemetrySample> telemetry_snapshot_cache_{};
   std::vector<TelemetrySample> telemetry_aligned_snapshot_cache_{};

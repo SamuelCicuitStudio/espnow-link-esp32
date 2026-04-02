@@ -217,6 +217,7 @@ class OtaManager {
                            const FirmwareImageMetadata& metadata,
                            std::string& out_message);
   bool clearDirContents_(const std::string& dir_path, std::string& out_message);
+  bool ensureIoScratch_(size_t size);
   bool ensurePsramPool_(std::string& out_message);
   void releasePsramPool_();
   bool markChunkReceived_(uint32_t chunk_index);
@@ -235,6 +236,7 @@ class OtaManager {
   ReceiveSession receive_{};
   FirmwareImageMetadata receive_meta_{};
   OtaRuntimeStatus status_{};
+  std::vector<uint8_t> io_scratch_{};
   uint8_t* psram_pool_ = nullptr;
   uint32_t psram_pool_size_ = 0;
 };

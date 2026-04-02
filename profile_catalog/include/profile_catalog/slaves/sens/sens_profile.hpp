@@ -103,6 +103,9 @@ class SensAppDescriptorProvider : public espnow_link::IDescriptorProvider, publi
                               const std::string& value,
                               bool persisted_ok,
                               std::string& out_message);
+  bool ensureSettingsCache_() const;
+  bool rebuildSettingsCache_(std::vector<espnow_link::SettingDescriptor>& out) const;
+  void invalidateSettingsCache_();
   bool appendTelemetryFromRuntime_(std::vector<espnow_link::TelemetrySample>& out);
 
   espnow_link::PreferencesStore& nvs_;
@@ -111,6 +114,8 @@ class SensAppDescriptorProvider : public espnow_link::IDescriptorProvider, publi
   espnow_link::IStorageExplorerProvider* storage_ = nullptr;
   espnow_link::OtaDescriptorAdapter* ota_ = nullptr;
   SensDescriptorAppConfig cfg_{};
+  mutable std::vector<espnow_link::SettingDescriptor> settings_cache_{};
+  mutable bool settings_cache_valid_ = false;
 };
 
 class SensAppProfileDefinition final : public espnow_link::IProfileDefinition {

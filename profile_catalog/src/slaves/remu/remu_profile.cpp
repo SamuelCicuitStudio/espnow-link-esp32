@@ -464,6 +464,15 @@ bool RemuAppDescriptorProvider::setTime(uint64_t epoch_s, std::string& out_messa
 
 bool RemuAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDescriptor>& out) {
   out.clear();
+  if (!ensureSettingsCache_()) {
+    return false;
+  }
+  out = settings_cache_;
+  return true;
+}
+
+bool RemuAppDescriptorProvider::rebuildSettingsCache_(std::vector<espnow_link::SettingDescriptor>& out) const {
+  out.clear();
   const size_t base_count = sizeof(kSettingDefs) / sizeof(kSettingDefs[0]);
   const size_t child_count = static_cast<size_t>(kRemuChildMax) * (sizeof(kChildSettingDefs) / sizeof(kChildSettingDefs[0]));
   out.reserve(base_count + child_count);
@@ -527,12 +536,30 @@ bool RemuAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDesc
   return true;
 }
 
-bool RemuAppDescriptorProvider::getSetting(const std::string& key, espnow_link::SettingDescriptor& out) {
-  std::vector<espnow_link::SettingDescriptor> all;
-  if (!getSettings(all)) {
+bool RemuAppDescriptorProvider::ensureSettingsCache_() const {
+  if (settings_cache_valid_) {
+    return true;
+  }
+  settings_cache_.clear();
+  if (!rebuildSettingsCache_(settings_cache_)) {
+    settings_cache_.clear();
+    settings_cache_valid_ = false;
     return false;
   }
-  for (const auto& s : all) {
+  settings_cache_valid_ = true;
+  return true;
+}
+
+void RemuAppDescriptorProvider::invalidateSettingsCache_() {
+  settings_cache_valid_ = false;
+  settings_cache_.clear();
+}
+
+bool RemuAppDescriptorProvider::getSetting(const std::string& key, espnow_link::SettingDescriptor& out) {
+  if (!ensureSettingsCache_()) {
+    return false;
+  }
+  for (const auto& s : settings_cache_) {
     if (s.key == key) {
       out = s;
       return true;
@@ -542,20 +569,16 @@ bool RemuAppDescriptorProvider::getSetting(const std::string& key, espnow_link::
 }
 
 bool RemuAppDescriptorProvider::getSettingById(uint16_t setting_id, espnow_link::SettingDescriptor& out) {
-  const espnow_link::ProfileSettingSpec* spec = espnow_link::findProfileSettingById(&remuProfileDefinition(), setting_id);
-  if (spec == nullptr || spec->key == nullptr || spec->key[0] == '\0') {
+  if (!ensureSettingsCache_()) {
     return false;
   }
-  if (!getSetting(spec->key, out)) {
-    return false;
+  for (const auto& s : settings_cache_) {
+    if (s.setting_id == setting_id) {
+      out = s;
+      return true;
+    }
   }
-  if (out.setting_id == 0U) {
-    out.setting_id = setting_id;
-  }
-  if (out.key.empty()) {
-    out.key = spec->key;
-  }
-  return true;
+  return false;
 }
 
 bool RemuAppDescriptorProvider::setSetting(const std::string& key, const std::string& value, std::string& out_message) {
@@ -567,6 +590,10 @@ bool RemuAppDescriptorProvider::setSetting(const std::string& key, const std::st
     }
     const bool ok = nvs_.putU32(PCAT_REMU_KEY_CLIBD, baud);
     out_message = ok ? "cli_baud updated (restart required)" : "cli_baud persist failed";
+    if (ok && settings_cache_valid_) {
+      settings_cache_valid_ = false;
+      (void)ensureSettingsCache_();
+    }
     if (cfg_.setting_feedback != nullptr) {
       cfg_.setting_feedback(cfg_.runtime_user, key, value, ok);
     }
@@ -853,6 +880,10 @@ bool RemuAppDescriptorProvider::finalizeSettingChange_(const std::string& key,
 
   if (cfg_.setting_feedback != nullptr) {
     cfg_.setting_feedback(cfg_.runtime_user, key, value, true);
+  }
+  if (settings_cache_valid_) {
+    settings_cache_valid_ = false;
+    (void)ensureSettingsCache_();
   }
   return true;
 }

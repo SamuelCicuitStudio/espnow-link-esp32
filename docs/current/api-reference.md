@@ -242,7 +242,7 @@ Reference headers:
 | `settingsCacheRefreshPeer(peer, out_req_id, timeout_ms)` | explicit peer | `bool` | Non-blocking targeted refresh submit. |
 | `settingsCacheRefreshPeerKey(peer, key, out_req_id, timeout_ms)` | explicit peer and key | `bool` | Targeted setting key refresh submit. |
 | `settingsCacheRefreshPeerId(peer, setting_id, out_req_id, timeout_ms)` | explicit peer and setting id | `bool` | Targeted setting id refresh submit. |
-| `settingsGetResolved(peer, out_settings, timeout_ms, out_run)` | explicit peer | `bool` | Equivalent resolved settings fetch path. |
+| `settingsGetResolved(peer, out_settings, timeout_ms, out_run)` | explicit peer | `bool` | Cache-first resolved settings read; falls back to one targeted refresh when full cache is unavailable. |
 | `settingsSetBatch(peer, items, out_results, options)` | explicit peer + key/value list | `bool` | Delta-aware writes; unchanged keys are skipped and reported. |
 | `cachedSettingResolved(peer, key, out)` | cached peer + key | `bool` | Returns resolved value (`current` else `default`). |
 | `cachedSettingsResolved(peer, out)` | cached peer | `bool` | Returns all resolved settings for peer. |
@@ -317,4 +317,3 @@ Recommended release usage:
 3. Opening settings with forced refresh every time (breaks cache-first policy).
 4. Ignoring deferred terminal events for `PairRequest`, `UnpairRequest`, `ChannelSyncAll`, `ChainLoopControlSet`, `OtaPushStart`, `OtaUpdateStart`.
 5. Mixing CLI text parsing into API data flows instead of using typed responses/cache.
-

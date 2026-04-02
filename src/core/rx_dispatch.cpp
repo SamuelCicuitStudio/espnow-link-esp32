@@ -11,39 +11,57 @@ bool EspNowManager::dispatchRxByType(const MacAddress& from,
                                      size_t payload_len,
                                      int rssi) {
   auto enqueue_control_rx = [&](MessageType type) {
+    constexpr size_t kQueueMax = 32U;
     QueuedControlRx frame{};
+    if (control_rx_queue_.size() >= kQueueMax) {
+      frame = std::move(control_rx_queue_.front());
+      control_rx_queue_.pop_front();
+    } else if (has_control_rx_recycle_) {
+      frame = std::move(control_rx_recycle_);
+      has_control_rx_recycle_ = false;
+    }
+
     frame.type = type;
     frame.from = from;
     frame.corr_id = header.correlation_id;
     frame.queued_ms = current_now_ms_;
     frame.rssi = rssi;
+    frame.payload.clear();
     if (payload != nullptr && payload_len > 0U) {
-      frame.payload.assign(payload, payload + payload_len);
+      if (frame.payload.capacity() < payload_len) {
+        frame.payload.reserve(payload_len);
+      }
+      frame.payload.insert(frame.payload.end(), payload, payload + payload_len);
     }
 
-    constexpr size_t kQueueMax = 32U;
-    if (control_rx_queue_.size() >= kQueueMax) {
-      control_rx_queue_.pop_front();
-    }
     control_rx_queue_.push_back(std::move(frame));
     return true;
   };
 
   auto enqueue_firmware_rx = [&](MessageType type) {
+    constexpr size_t kQueueMax = 32U;
     QueuedFirmwareRx frame{};
+    if (firmware_rx_queue_.size() >= kQueueMax) {
+      frame = std::move(firmware_rx_queue_.front());
+      firmware_rx_queue_.pop_front();
+    } else if (has_firmware_rx_recycle_) {
+      frame = std::move(firmware_rx_recycle_);
+      has_firmware_rx_recycle_ = false;
+    }
+
     frame.type = type;
     frame.from = from;
     frame.corr_id = header.correlation_id;
     frame.queued_ms = current_now_ms_;
     frame.rssi = rssi;
+    frame.payload.clear();
     if (payload != nullptr && payload_len > 0U) {
-      frame.payload.assign(payload, payload + payload_len);
+      if (frame.payload.capacity() < payload_len) {
+        frame.payload.reserve(payload_len);
+      }
+      frame.payload.insert(frame.payload.end(), payload, payload + payload_len);
     }
 
-    constexpr size_t kQueueMax = 32U;
-    if (firmware_rx_queue_.size() >= kQueueMax) {
-      firmware_rx_queue_.pop_front();
-    }
     firmware_rx_queue_.push_back(std::move(frame));
     return true;
   };
@@ -252,20 +270,29 @@ bool EspNowManager::onRxPullRequest(const MacAddress& from,
     return false;
   }
 
+  constexpr size_t kQueueMax = 8U;
   QueuedPullRequest request{};
+  if (pull_request_queue_.size() >= kQueueMax) {
+    request = std::move(pull_request_queue_.front());
+    pull_request_queue_.pop_front();
+  } else if (has_pull_request_recycle_) {
+    request = std::move(pull_request_recycle_);
+    has_pull_request_recycle_ = false;
+  }
+
   request.from = from;
   request.corr_id = header.correlation_id;
   request.wire_service = header.wire_service;
   request.wire_op = header.wire_op_code;
   request.queued_ms = current_now_ms_;
+  request.payload.clear();
   if (payload != nullptr && payload_len > 0U) {
-    request.payload.assign(payload, payload + payload_len);
+    if (request.payload.capacity() < payload_len) {
+      request.payload.reserve(payload_len);
+    }
+    request.payload.insert(request.payload.end(), payload, payload + payload_len);
   }
 
-  constexpr size_t kQueueMax = 8U;
-  if (pull_request_queue_.size() >= kQueueMax) {
-    pull_request_queue_.pop_front();
-  }
   pull_request_queue_.push_back(std::move(request));
   return true;
 }
@@ -275,18 +302,27 @@ bool EspNowManager::onRxPullResponse(const MacAddress& from,
                                      const uint8_t* payload,
                                      size_t payload_len) {
   if (config_.local_role == Role::Master) {
+    constexpr size_t kQueueMax = 32U;
     QueuedPullResponse response{};
+    if (pull_response_queue_.size() >= kQueueMax) {
+      response = std::move(pull_response_queue_.front());
+      pull_response_queue_.pop_front();
+    } else if (has_pull_response_recycle_) {
+      response = std::move(pull_response_recycle_);
+      has_pull_response_recycle_ = false;
+    }
+
     response.from = from;
     response.corr_id = header.correlation_id;
     response.queued_ms = current_now_ms_;
+    response.payload.clear();
     if (payload != nullptr && payload_len > 0U) {
-      response.payload.assign(payload, payload + payload_len);
+      if (response.payload.capacity() < payload_len) {
+        response.payload.reserve(payload_len);
+      }
+      response.payload.insert(response.payload.end(), payload, payload + payload_len);
     }
 
-    constexpr size_t kQueueMax = 32U;
-    if (pull_response_queue_.size() >= kQueueMax) {
-      pull_response_queue_.pop_front();
-    }
     pull_response_queue_.push_back(std::move(response));
     return true;
   }

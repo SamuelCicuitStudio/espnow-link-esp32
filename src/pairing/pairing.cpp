@@ -208,7 +208,10 @@ PairingEngine::PairingEngine(const ManagerConfig& config,
       hooks_(hooks),
       peer_window_(peer_window),
       time_source_(time_source),
-      logger_(logger) {}
+      logger_(logger) {
+  tx_wrapped_payload_scratch_.reserve(ProtocolCodec::kMaxPayload);
+  tx_encoded_frame_scratch_.reserve(ProtocolCodec::kMaxFrameBytes);
+}
 
 void PairingEngine::setLogger(LibraryLogger* logger) {
   logger_ = logger;
@@ -926,19 +929,19 @@ bool PairingEngine::sendControl(const MacAddress& to,
   h.correlation_id = corr_id;
   h.role = config_.local_role;
 
-  std::vector<uint8_t> wrapped_payload;
+  tx_wrapped_payload_scratch_.clear();
   if (shouldAttachTimeSync(current_now_ms_) && payload_len <= (ProtocolCodec::kMaxPayload - kTimeSyncMetadataSize)) {
     uint64_t epoch_s = 0;
     if (time_source_->nowEpochSec(epoch_s)) {
-      wrapped_payload.resize(kTimeSyncMetadataSize + payload_len);
+      tx_wrapped_payload_scratch_.resize(kTimeSyncMetadataSize + payload_len);
       const uint32_t epoch_s32 = static_cast<uint32_t>(epoch_s & 0xFFFFFFFFULL);
-      wrapped_payload[0] = static_cast<uint8_t>(epoch_s32 & 0xFFU);
-      wrapped_payload[1] = static_cast<uint8_t>((epoch_s32 >> 8) & 0xFFU);
-      wrapped_payload[2] = static_cast<uint8_t>((epoch_s32 >> 16) & 0xFFU);
-      wrapped_payload[3] = static_cast<uint8_t>((epoch_s32 >> 24) & 0xFFU);
+      tx_wrapped_payload_scratch_[0] = static_cast<uint8_t>(epoch_s32 & 0xFFU);
+      tx_wrapped_payload_scratch_[1] = static_cast<uint8_t>((epoch_s32 >> 8) & 0xFFU);
+      tx_wrapped_payload_scratch_[2] = static_cast<uint8_t>((epoch_s32 >> 16) & 0xFFU);
+      tx_wrapped_payload_scratch_[3] = static_cast<uint8_t>((epoch_s32 >> 24) & 0xFFU);
       if (payload_len > 0 && payload != nullptr) {
         for (size_t i = 0; i < payload_len; ++i) {
-          wrapped_payload[kTimeSyncMetadataSize + i] = payload[i];
+          tx_wrapped_payload_scratch_[kTimeSyncMetadataSize + i] = payload[i];
         }
       }
       h.flags |= kFrameFlagTimeSyncEpoch;
@@ -949,22 +952,24 @@ bool PairingEngine::sendControl(const MacAddress& to,
 
   const uint8_t* wire_payload = payload;
   size_t wire_len = payload_len;
-  if (!wrapped_payload.empty()) {
-    wire_payload = wrapped_payload.data();
-    wire_len = wrapped_payload.size();
+  if (!tx_wrapped_payload_scratch_.empty()) {
+    wire_payload = tx_wrapped_payload_scratch_.data();
+    wire_len = tx_wrapped_payload_scratch_.size();
   }
 
   h.payload_length = static_cast<uint16_t>(wire_len);
 
-  std::vector<uint8_t> bytes;
-  if (!ProtocolCodec::encode(h, wire_payload, wire_len, bytes)) {
+  tx_encoded_frame_scratch_.clear();
+  if (!ProtocolCodec::encode(h, wire_payload, wire_len, tx_encoded_frame_scratch_)) {
     if (hooks_ != nullptr) {
       hooks_->onTxFrame(to, type, corr_id, wire_len, false);
     }
     return false;
   }
 
-  const bool ok = transport_.send(to, bytes.data(), bytes.size());
+  const bool ok = transport_.send(to,
+                                  tx_encoded_frame_scratch_.data(),
+                                  tx_encoded_frame_scratch_.size());
   if (hooks_ != nullptr) {
     hooks_->onTxFrame(to, type, corr_id, wire_len, ok);
   }

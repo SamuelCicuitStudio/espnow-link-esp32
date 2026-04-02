@@ -127,7 +127,7 @@ class ManagementController {
    * a rich acceptance/reject result.
    */
   SubmitResult submit(uint16_t cmd_id,
-                      const std::vector<uint8_t>& payload,
+                      std::vector<uint8_t> payload,
                       const SubmitOptions& options);
   SubmitResult submit(uint16_t cmd_id,
                       const std::vector<uint8_t>& payload = {}) {
@@ -336,7 +336,7 @@ class ManagementController {
 
  private:
   bool submitCommand_(ManagementCommandId cmd,
-                      const std::vector<uint8_t>& payload,
+                      std::vector<uint8_t> payload,
                       uint32_t* out_req_id,
                       uint32_t timeout_ms);
 

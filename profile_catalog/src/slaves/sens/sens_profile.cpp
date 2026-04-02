@@ -339,6 +339,15 @@ bool SensAppDescriptorProvider::setTime(uint64_t epoch_s, std::string& out_messa
 
 bool SensAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDescriptor>& out) {
   out.clear();
+  if (!ensureSettingsCache_()) {
+    return false;
+  }
+  out = settings_cache_;
+  return true;
+}
+
+bool SensAppDescriptorProvider::rebuildSettingsCache_(std::vector<espnow_link::SettingDescriptor>& out) const {
+  out.clear();
   out.reserve(sizeof(kSettingDefs) / sizeof(kSettingDefs[0]));
   for (const auto& s : kSettingDefs) {
     espnow_link::SettingDescriptor d{};
@@ -374,12 +383,30 @@ bool SensAppDescriptorProvider::getSettings(std::vector<espnow_link::SettingDesc
   return true;
 }
 
-bool SensAppDescriptorProvider::getSetting(const std::string& key, espnow_link::SettingDescriptor& out) {
-  std::vector<espnow_link::SettingDescriptor> all;
-  if (!getSettings(all)) {
+bool SensAppDescriptorProvider::ensureSettingsCache_() const {
+  if (settings_cache_valid_) {
+    return true;
+  }
+  settings_cache_.clear();
+  if (!rebuildSettingsCache_(settings_cache_)) {
+    settings_cache_.clear();
+    settings_cache_valid_ = false;
     return false;
   }
-  for (const auto& s : all) {
+  settings_cache_valid_ = true;
+  return true;
+}
+
+void SensAppDescriptorProvider::invalidateSettingsCache_() {
+  settings_cache_valid_ = false;
+  settings_cache_.clear();
+}
+
+bool SensAppDescriptorProvider::getSetting(const std::string& key, espnow_link::SettingDescriptor& out) {
+  if (!ensureSettingsCache_()) {
+    return false;
+  }
+  for (const auto& s : settings_cache_) {
     if (s.key == key) {
       out = s;
       return true;
@@ -389,20 +416,16 @@ bool SensAppDescriptorProvider::getSetting(const std::string& key, espnow_link::
 }
 
 bool SensAppDescriptorProvider::getSettingById(uint16_t setting_id, espnow_link::SettingDescriptor& out) {
-  const espnow_link::ProfileSettingSpec* spec = espnow_link::findProfileSettingById(&sensProfileDefinition(), setting_id);
-  if (spec == nullptr || spec->key == nullptr || spec->key[0] == '\0') {
+  if (!ensureSettingsCache_()) {
     return false;
   }
-  if (!getSetting(spec->key, out)) {
-    return false;
+  for (const auto& s : settings_cache_) {
+    if (s.setting_id == setting_id) {
+      out = s;
+      return true;
+    }
   }
-  if (out.setting_id == 0U) {
-    out.setting_id = setting_id;
-  }
-  if (out.key.empty()) {
-    out.key = spec->key;
-  }
-  return true;
+  return false;
 }
 
 bool SensAppDescriptorProvider::setSetting(const std::string& key, const std::string& value, std::string& out_message) {
@@ -414,6 +437,10 @@ bool SensAppDescriptorProvider::setSetting(const std::string& key, const std::st
     }
     const bool ok = nvs_.putU32(PCAT_SENS_KEY_CLIBD, baud);
     out_message = ok ? "cli_baud updated (restart required)" : "cli_baud persist failed";
+    if (ok && settings_cache_valid_) {
+      settings_cache_valid_ = false;
+      (void)ensureSettingsCache_();
+    }
     if (cfg_.setting_feedback != nullptr) {
       cfg_.setting_feedback(cfg_.runtime_user, key, value, ok);
     }
@@ -663,6 +690,10 @@ bool SensAppDescriptorProvider::finalizeSettingChange_(const std::string& key,
 
   if (cfg_.setting_feedback != nullptr) {
     cfg_.setting_feedback(cfg_.runtime_user, key, value, true);
+  }
+  if (settings_cache_valid_) {
+    settings_cache_valid_ = false;
+    (void)ensureSettingsCache_();
   }
   return true;
 }

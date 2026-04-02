@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "espnow_link/config.hpp"
 #include "espnow_link/events.hpp"
 #include "espnow_link/hooks.hpp"
@@ -176,6 +178,8 @@ class PairingEngine {
   uint32_t channel_corr_id_ = 0;
   uint32_t channel_effective_at_ms_ = 0;
   uint32_t channel_deadline_ms_ = 0;
+  std::vector<uint8_t> tx_wrapped_payload_scratch_{};
+  std::vector<uint8_t> tx_encoded_frame_scratch_{};
 };
 
 }  // namespace espnow_link

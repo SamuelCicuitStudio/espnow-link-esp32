@@ -52,7 +52,7 @@ class ManagementService : public IEventSink, public IControlPlane {
    * @param request Request envelope.
    * @return true if request was accepted into queue.
    */
-  bool submit(const ManagementRequest& request);
+  bool submit(ManagementRequest request);
 
   /**
    * @brief Advance request processing and time-based transitions.
@@ -266,14 +266,14 @@ class ManagementService : public IEventSink, public IControlPlane {
                          MacAddress& out_peer,
                          PeerResolveContext* out_peer_ctx = nullptr);
 
-  void queueResponse(const ManagementResponse& response);
+  void queueResponse(ManagementResponse response);
   void queueResponse(ManagementSource source,
                      uint16_t cmd_id,
                      uint32_t req_id,
                      ManagementStatus status,
-                     const std::vector<uint8_t>& payload = {},
+                     std::vector<uint8_t> payload = {},
                      const PeerResolveContext* peer_ctx = nullptr);
-  void queueEvent(const ManagementEvent& event);
+  void queueEvent(ManagementEvent event);
   void emitServiceEvent(ManagementEventId event_id,
                         const ManagementRequest& request,
                         ManagementStatus status,
@@ -494,6 +494,7 @@ class ManagementService : public IEventSink, public IControlPlane {
   std::vector<DeferredLifecycleCommand> deferred_lifecycle_commands_{};
   std::vector<PendingDescriptorPull> pending_descriptor_pulls_{};
   std::vector<PendingDeferredTopologyCommit> deferred_topology_commits_{};
+  std::string pull_descriptor_payload_scratch_{};
   mutable std::recursive_mutex state_mx_{};
 };
 

@@ -463,21 +463,22 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
     if (!topology_stage_active_ || topology_stage_owner_ != from) {
       return sendDescriptorError_(from, corr_id, "topology stage not active");
     }
-    std::string stage_error{};
-    const bool ok = manager_->stageTopology(topology_stage_snapshot_, &stage_error);
+    std::string apply_error{};
+    const bool staged = manager_->stageTopology(topology_stage_snapshot_, &apply_error);
+    const bool committed = staged && manager_->commitStagedTopology(&apply_error);
     resetTopologyStageSession_();
-    if (!ok) {
-      if (stage_error.empty()) {
-        stage_error = "topology stage failed";
+    if (!staged || !committed) {
+      if (apply_error.empty()) {
+        apply_error = staged ? "topology commit failed" : "topology stage failed";
       }
       logf_("[%s][TOPO] stage_finalize status=fail reason=%s\n",
             (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE",
-            stage_error.c_str());
-      return sendDescriptorError_(from, corr_id, stage_error);
+            apply_error.c_str());
+      return sendDescriptorError_(from, corr_id, apply_error);
     }
-    logf_("[%s][TOPO] stage_finalize status=ok\n",
+    logf_("[%s][TOPO] stage_finalize status=ok mode=direct_apply\n",
           (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
-    return sendDescriptorAck_(from, corr_id, "topology staged");
+    return sendDescriptorAck_(from, corr_id, "topology applied");
   }
 
   if (query.type == DescriptorQueryType::TopologyCommit) {
@@ -485,6 +486,14 @@ bool SlaveControlPlane::handleTopologyQuery_(const MacAddress& from,
           (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
     std::string commit_error{};
     if (!manager_->commitStagedTopology(&commit_error)) {
+      if (commit_error == "topology_not_staged") {
+        EspNowManager::TopologyStatus status{};
+        if (manager_->getTopologyStatus(status) && status.has_committed) {
+          logf_("[%s][TOPO] commit_ok mode=already_committed\n",
+                (cfg_.log_prefix != nullptr) ? cfg_.log_prefix : "SLAVE");
+          return sendDescriptorAck_(from, corr_id, "topology already committed");
+        }
+      }
       if (commit_error.empty()) {
         commit_error = "topology commit failed";
       }
@@ -601,6 +610,7 @@ bool SlaveControlPlane::onPullRequest(const MacAddress& from,
       uint16_t cursor = chunk_query.cursor;
       bool first_chunk = true;
       static constexpr uint8_t kMaxBundleChunks = 32U;
+      std::vector<uint8_t> encoded{};
 
       for (uint8_t chunk_idx = 0U; chunk_idx < kMaxBundleChunks; ++chunk_idx) {
         chunk_query.cursor = cursor;
@@ -616,7 +626,7 @@ bool SlaveControlPlane::onPullRequest(const MacAddress& from,
           response.message = "descriptor handler failure";
         }
 
-        std::vector<uint8_t> encoded{};
+        encoded.clear();
         if (!manager_->encodeDescriptorResponsePayload(response, encoded)) {
           return false;
         }
@@ -624,17 +634,13 @@ bool SlaveControlPlane::onPullRequest(const MacAddress& from,
           return false;
         }
 
-        DescriptorResponse emitted{};
-        if (!manager_->decodeDescriptorResponsePayload(encoded.data(), encoded.size(), emitted)) {
+        if (response.type != DescriptorResponseType::NodeBundle) {
           return true;
         }
-        if (emitted.type != DescriptorResponseType::NodeBundle) {
+        if (!response.is_paged || response.done) {
           return true;
         }
-        if (!emitted.is_paged || emitted.done) {
-          return true;
-        }
-        if (emitted.next_cursor <= cursor) {
+        if (response.next_cursor <= cursor) {
           DescriptorResponse err{};
           err.type = DescriptorResponseType::Error;
           err.message = "bundle paging stalled";
@@ -645,7 +651,7 @@ bool SlaveControlPlane::onPullRequest(const MacAddress& from,
           return false;
         }
 
-        cursor = emitted.next_cursor;
+        cursor = response.next_cursor;
         first_chunk = false;
       }
 

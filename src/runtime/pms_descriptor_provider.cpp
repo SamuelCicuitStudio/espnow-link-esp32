@@ -207,6 +207,15 @@ bool PmsDescriptorProvider::setTime(uint64_t epoch_s, std::string& out_message) 
 
 bool PmsDescriptorProvider::getSettings(std::vector<SettingDescriptor>& out) {
   out.clear();
+  if (!ensureSettingsCache_()) {
+    return false;
+  }
+  out = settings_cache_;
+  return true;
+}
+
+bool PmsDescriptorProvider::rebuildSettingsCache_(std::vector<SettingDescriptor>& out) const {
+  out.clear();
 
   SettingDescriptor s{};
 
@@ -345,6 +354,25 @@ bool PmsDescriptorProvider::getSettings(std::vector<SettingDescriptor>& out) {
   return true;
 }
 
+bool PmsDescriptorProvider::ensureSettingsCache_() const {
+  if (settings_cache_valid_) {
+    return true;
+  }
+  settings_cache_.clear();
+  if (!rebuildSettingsCache_(settings_cache_)) {
+    settings_cache_.clear();
+    settings_cache_valid_ = false;
+    return false;
+  }
+  settings_cache_valid_ = true;
+  return true;
+}
+
+void PmsDescriptorProvider::invalidateSettingsCache_() {
+  settings_cache_valid_ = false;
+  settings_cache_.clear();
+}
+
 bool PmsDescriptorProvider::getSetting(const std::string& key, SettingDescriptor& out) {
   uint16_t setting_id = 0;
   if (!settingIdFromKey_(key, setting_id)) {
@@ -354,148 +382,29 @@ bool PmsDescriptorProvider::getSetting(const std::string& key, SettingDescriptor
 }
 
 bool PmsDescriptorProvider::getSettingById(uint16_t setting_id, SettingDescriptor& out) {
-  out = SettingDescriptor{};
-  switch (setting_id) {
-    case kSettingIdDeviceName:
-      out.setting_id = kSettingIdDeviceName;
-      out.key = "device_name";
-      out.value_type = SettingValueType::String;
-      out.writable = true;
-      out.nvs_key = kSettingNameKey;
-      out.current_value = loadName_();
-      out.default_value = cfg_.default_device_name;
-      out.description = "Human-readable node label";
-      return true;
-
-    case kSettingIdChannel:
-      out.setting_id = kSettingIdChannel;
-      out.key = "channel";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingChannelKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingChannelKey, 1)));
-      out.default_value = "1";
-      out.description = "ESP-NOW channel";
-      return true;
-
-    case kSettingIdPwrMode:
-      out.setting_id = kSettingIdPwrMode;
-      out.key = "pwr_mode";
-      out.value_type = SettingValueType::String;
-      out.writable = true;
-      out.nvs_key = kSettingPwrModeKey;
-      out.current_value = loadString_(kSettingPwrModeKey, "normal");
-      out.default_value = "normal";
-      out.description = "Power behavior mode: normal|eco|safe";
-      return true;
-
-    case kSettingIdTripLimitCurrent:
-      out.setting_id = kSettingIdTripLimitCurrent;
-      out.key = "trip_limit_current";
-      out.value_type = SettingValueType::Float;
-      out.writable = true;
-      out.nvs_key = kSettingTripLimitCurrentKey;
-      out.current_value = formatFloat_(loadFloat_(kSettingTripLimitCurrentKey, 15.0f));
-      out.default_value = "15.00";
-      out.description = "Current trip limit in A";
-      return true;
-
-    case kSettingIdVCalFactor:
-      out.setting_id = kSettingIdVCalFactor;
-      out.key = "v_cal_factor";
-      out.value_type = SettingValueType::Float;
-      out.writable = true;
-      out.nvs_key = kSettingVCalFactorKey;
-      out.current_value = formatFloat_(loadFloat_(kSettingVCalFactorKey, 1.0f));
-      out.default_value = "1.00";
-      out.description = "Voltage calibration factor";
-      return true;
-
-    case kSettingIdICalFactor:
-      out.setting_id = kSettingIdICalFactor;
-      out.key = "i_cal_factor";
-      out.value_type = SettingValueType::Float;
-      out.writable = true;
-      out.nvs_key = kSettingICalFactorKey;
-      out.current_value = formatFloat_(loadFloat_(kSettingICalFactorKey, 1.0f));
-      out.default_value = "1.00";
-      out.description = "Current calibration factor";
-      return true;
-
-    case kSettingIdVbusOvpMv:
-      out.setting_id = kSettingIdVbusOvpMv;
-      out.key = "vbus_ovp_mv";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingVbusOvpMvKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingVbusOvpMvKey, 15000)));
-      out.default_value = "15000";
-      out.description = "VBUS over-voltage protection in mV";
-      return true;
-
-    case kSettingIdVbusUvpMv:
-      out.setting_id = kSettingIdVbusUvpMv;
-      out.key = "vbus_uvp_mv";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingVbusUvpMvKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingVbusUvpMvKey, 9000)));
-      out.default_value = "9000";
-      out.description = "VBUS under-voltage protection in mV";
-      return true;
-
-    case kSettingIdIbusOcpMa:
-      out.setting_id = kSettingIdIbusOcpMa;
-      out.key = "ibus_ocp_ma";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingIbusOcpMaKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingIbusOcpMaKey, 10000)));
-      out.default_value = "10000";
-      out.description = "IBUS over-current protection in mA";
-      return true;
-
-    case kSettingIdVbatOvpMv:
-      out.setting_id = kSettingIdVbatOvpMv;
-      out.key = "vbat_ovp_mv";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingVbatOvpMvKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingVbatOvpMvKey, 14600)));
-      out.default_value = "14600";
-      out.description = "VBAT over-voltage protection in mV";
-      return true;
-
-    case kSettingIdVbatUvpMv:
-      out.setting_id = kSettingIdVbatUvpMv;
-      out.key = "vbat_uvp_mv";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingVbatUvpMvKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingVbatUvpMvKey, 10000)));
-      out.default_value = "10000";
-      out.description = "VBAT under-voltage protection in mV";
-      return true;
-
-    case kSettingIdIbatOcpMa:
-      out.setting_id = kSettingIdIbatOcpMa;
-      out.key = "ibat_ocp_ma";
-      out.value_type = SettingValueType::Int;
-      out.writable = true;
-      out.nvs_key = kSettingIbatOcpMaKey;
-      out.current_value = std::to_string(static_cast<unsigned long>(loadU16_(kSettingIbatOcpMaKey, 10000)));
-      out.default_value = "10000";
-      out.description = "IBAT over-current protection in mA";
-      return true;
-
-    default:
-      return false;
+  if (!ensureSettingsCache_()) {
+    return false;
   }
+  for (const auto& s : settings_cache_) {
+    if (s.setting_id == setting_id) {
+      out = s;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool PmsDescriptorProvider::setSetting(const std::string& key,
                                        const std::string& value,
                                        std::string& out_message) {
+  auto commit = [&](bool ok) {
+    if (ok && settings_cache_valid_) {
+      settings_cache_valid_ = false;
+      (void)ensureSettingsCache_();
+    }
+    return ok;
+  };
+
   if (key == "device_name") {
     if (value.empty()) {
       out_message = "device_name cannot be empty";
@@ -507,7 +416,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     const bool ok = nvs_.putString(kSettingNameKey, value);
 #endif
     out_message = ok ? "device_name updated" : "device_name persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "channel") {
@@ -518,7 +427,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingChannelKey, static_cast<uint16_t>(v));
     out_message = ok ? "channel updated" : "channel persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "pwr_mode") {
@@ -532,7 +441,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     const bool ok = nvs_.putString(kSettingPwrModeKey, value);
 #endif
     out_message = ok ? "pwr_mode updated" : "pwr_mode persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "trip_limit_current") {
@@ -544,7 +453,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putFloat(kSettingTripLimitCurrentKey, v);
     out_message = ok ? "trip_limit_current updated" : "trip_limit_current persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "v_cal_factor") {
@@ -556,7 +465,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putFloat(kSettingVCalFactorKey, v);
     out_message = ok ? "v_cal_factor updated" : "v_cal_factor persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "i_cal_factor") {
@@ -568,7 +477,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putFloat(kSettingICalFactorKey, v);
     out_message = ok ? "i_cal_factor updated" : "i_cal_factor persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "vbus_ovp_mv") {
@@ -579,7 +488,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingVbusOvpMvKey, static_cast<uint16_t>(v));
     out_message = ok ? "vbus_ovp_mv updated" : "vbus_ovp_mv persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "vbus_uvp_mv") {
@@ -590,7 +499,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingVbusUvpMvKey, static_cast<uint16_t>(v));
     out_message = ok ? "vbus_uvp_mv updated" : "vbus_uvp_mv persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "ibus_ocp_ma") {
@@ -601,7 +510,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingIbusOcpMaKey, static_cast<uint16_t>(v));
     out_message = ok ? "ibus_ocp_ma updated" : "ibus_ocp_ma persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "vbat_ovp_mv") {
@@ -612,7 +521,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingVbatOvpMvKey, static_cast<uint16_t>(v));
     out_message = ok ? "vbat_ovp_mv updated" : "vbat_ovp_mv persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "vbat_uvp_mv") {
@@ -623,7 +532,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingVbatUvpMvKey, static_cast<uint16_t>(v));
     out_message = ok ? "vbat_uvp_mv updated" : "vbat_uvp_mv persist failed";
-    return ok;
+    return commit(ok);
   }
 
   if (key == "ibat_ocp_ma") {
@@ -634,7 +543,7 @@ bool PmsDescriptorProvider::setSetting(const std::string& key,
     }
     const bool ok = nvs_.putU16(kSettingIbatOcpMaKey, static_cast<uint16_t>(v));
     out_message = ok ? "ibat_ocp_ma updated" : "ibat_ocp_ma persist failed";
-    return ok;
+    return commit(ok);
   }
 
   out_message = "unknown setting";

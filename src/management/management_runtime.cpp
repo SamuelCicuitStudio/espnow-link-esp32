@@ -1,6 +1,7 @@
 #include "espnow_link/management_runtime.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace espnow_link {
 
@@ -44,7 +45,7 @@ void ManagementRuntime::tick(uint32_t now_ms,
         request.source = transport->source();
         request.access_level = transport->accessLevel();
 
-        if (service_.submit(request)) {
+        if (service_.submit(std::move(request))) {
           ++stats_.submitted_requests;
         } else {
           ++stats_.dropped_requests;

@@ -14,9 +14,7 @@
                    },
     "authors":  [
                     {
-                        "name":  "Tshibangu Samuel",
-                        "email":  "tshibsamuel47@gmail.com",
-                        "url":  "https://www.freelancer.com/u/tshibsamuel477",
+                        "name":  "EasyDriveway",
                         "maintainer":  true
                     }
                 ],
@@ -36,6 +34,7 @@
                   "srcDir":  ".",
                   "srcFilter":  [
                                     "+<src/>",
+                                    "-<src/core/manager.cpp>",
                                     "+<profile_catalog/src/>"
                                 ]
               }

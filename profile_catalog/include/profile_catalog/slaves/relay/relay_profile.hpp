@@ -89,6 +89,9 @@ class RelayAppDescriptorProvider : public espnow_link::IDescriptorProvider, publ
                               const std::string& value,
                               bool persisted_ok,
                               std::string& out_message);
+  bool ensureSettingsCache_() const;
+  bool rebuildSettingsCache_(std::vector<espnow_link::SettingDescriptor>& out) const;
+  void invalidateSettingsCache_();
   bool appendTelemetryFromRuntime_(std::vector<espnow_link::TelemetrySample>& out);
   uint32_t loadU32_(const char* key, uint32_t fallback) const;
   bool loadBool_(const char* key, bool fallback) const;
@@ -102,6 +105,8 @@ class RelayAppDescriptorProvider : public espnow_link::IDescriptorProvider, publ
   espnow_link::IStorageExplorerProvider* storage_ = nullptr;
   espnow_link::OtaDescriptorAdapter* ota_ = nullptr;
   RelayDescriptorAppConfig cfg_{};
+  mutable std::vector<espnow_link::SettingDescriptor> settings_cache_{};
+  mutable bool settings_cache_valid_ = false;
 };
 
 class RelayAppProfileDefinition final : public espnow_link::IProfileDefinition {

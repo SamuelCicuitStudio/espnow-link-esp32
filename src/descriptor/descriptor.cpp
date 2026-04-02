@@ -229,6 +229,21 @@ std::string clipForPage(const std::string& v, size_t max_len) {
   return v.substr(0, max_len);
 }
 
+template <typename T>
+void slicePageInPlace(std::vector<T>& list, size_t start, size_t end) {
+  const size_t total = list.size();
+  const size_t safe_start = std::min(start, total);
+  const size_t safe_end = std::min(std::max(safe_start, end), total);
+  using Diff = typename std::vector<T>::difference_type;
+  if (safe_start > 0U) {
+    list.erase(list.begin(), list.begin() + static_cast<Diff>(safe_start));
+  }
+  const size_t keep = safe_end - safe_start;
+  if (list.size() > keep) {
+    list.erase(list.begin() + static_cast<Diff>(keep), list.end());
+  }
+}
+
 void finalizePageMeta(const DescriptorQuery& query,
                       size_t total_count,
                       size_t returned_count,
@@ -767,13 +782,14 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
       const size_t total = full_caps.size();
       const size_t start = std::min<size_t>(query.cursor, total);
       const size_t end = std::min<size_t>(total, start + page_size);
-      out.capabilities.assign(full_caps.begin() + static_cast<std::ptrdiff_t>(start),
-                              full_caps.begin() + static_cast<std::ptrdiff_t>(end));
-      for (auto& cap : out.capabilities) {
+      const uint32_t snapshot_id = snapshotCapabilities(full_caps, out.message);
+      slicePageInPlace(full_caps, start, end);
+      for (auto& cap : full_caps) {
         cap.key = clipForPage(cap.key, 32);
         cap.description = clipForPage(cap.description, 56);
       }
-      finalizePageMeta(query, total, end - start, snapshotCapabilities(full_caps, out.message), out);
+      out.capabilities = std::move(full_caps);
+      finalizePageMeta(query, total, end - start, snapshot_id, out);
       return true;
     }
 
@@ -827,14 +843,15 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
       const size_t total = full_telem.size();
       const size_t start = std::min<size_t>(query.cursor, total);
       const size_t end = std::min<size_t>(total, start + page_size);
-      out.telemetry.assign(full_telem.begin() + static_cast<std::ptrdiff_t>(start),
-                           full_telem.begin() + static_cast<std::ptrdiff_t>(end));
-      for (auto& t : out.telemetry) {
+      const uint32_t snapshot_id = snapshotTelemetry(full_telem, out.message);
+      slicePageInPlace(full_telem, start, end);
+      for (auto& t : full_telem) {
         t.key = clipForPage(t.key, 32);
         t.unit = clipForPage(t.unit, 8);
         t.description = clipForPage(t.description, 56);
       }
-      finalizePageMeta(query, total, end - start, snapshotTelemetry(full_telem, out.message), out);
+      out.telemetry = std::move(full_telem);
+      finalizePageMeta(query, total, end - start, snapshot_id, out);
       return true;
     }
 
@@ -855,18 +872,17 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
 
       const uint16_t page_size = effectivePageSize(query);
       if (page_size > 0U) {
-        const std::vector<TelemetrySample> full_samples = out.telemetry_samples;
-        const size_t total = full_samples.size();
+        const size_t total = out.telemetry_samples.size();
         const size_t start = std::min<size_t>(query.cursor, total);
         const size_t end = std::min<size_t>(total, start + page_size);
-        out.telemetry_samples.assign(full_samples.begin() + static_cast<std::ptrdiff_t>(start),
-                                     full_samples.begin() + static_cast<std::ptrdiff_t>(end));
+        const uint32_t snapshot_id = snapshotTelemetrySamples(out.telemetry_samples, out.message);
+        slicePageInPlace(out.telemetry_samples, start, end);
         for (auto& s : out.telemetry_samples) {
           s.key = clipForPage(s.key, 32);
           s.value = clipForPage(s.value, 32);
           s.unit = clipForPage(s.unit, 8);
         }
-        finalizePageMeta(query, total, end - start, snapshotTelemetrySamples(full_samples, out.message), out);
+        finalizePageMeta(query, total, end - start, snapshot_id, out);
       }
 
       out.type = DescriptorResponseType::TelemetrySnapshot;
@@ -983,16 +999,17 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
       const size_t total = full_settings.size();
       const size_t start = std::min<size_t>(query.cursor, total);
       const size_t end = std::min<size_t>(total, start + page_size);
-      out.settings.assign(full_settings.begin() + static_cast<std::ptrdiff_t>(start),
-                          full_settings.begin() + static_cast<std::ptrdiff_t>(end));
-      for (auto& st : out.settings) {
+      const uint32_t snapshot_id = snapshotSettings(full_settings, out.message);
+      slicePageInPlace(full_settings, start, end);
+      for (auto& st : full_settings) {
         st.key = clipForPage(st.key, 32);
         st.nvs_key = clipForPage(st.nvs_key, 20);
         st.current_value = clipForPage(st.current_value, 40);
         st.default_value = clipForPage(st.default_value, 40);
         st.description = clipForPage(st.description, 56);
       }
-      finalizePageMeta(query, total, end - start, snapshotSettings(full_settings, out.message), out);
+      out.settings = std::move(full_settings);
+      finalizePageMeta(query, total, end - start, snapshot_id, out);
       return true;
     }
 
@@ -1119,16 +1136,17 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
             const size_t total = full_settings.size();
             const size_t start = std::min<size_t>(query.cursor, total);
             const size_t end = std::min<size_t>(total, start + page_size);
-            out.settings.assign(full_settings.begin() + static_cast<std::ptrdiff_t>(start),
-                                full_settings.begin() + static_cast<std::ptrdiff_t>(end));
-            for (auto& st : out.settings) {
+            const uint32_t snapshot_id = snapshotSettings(full_settings, out.message);
+            slicePageInPlace(full_settings, start, end);
+            for (auto& st : full_settings) {
               st.key = clipForPage(st.key, 32);
               st.nvs_key = clipForPage(st.nvs_key, 20);
               st.current_value = clipForPage(st.current_value, 40);
               st.default_value = clipForPage(st.default_value, 40);
               st.description = clipForPage(st.description, 56);
             }
-            finalizePageMeta(query, total, end - start, snapshotSettings(full_settings, out.message), out);
+            out.settings = std::move(full_settings);
+            finalizePageMeta(query, total, end - start, snapshot_id, out);
           }
           have_any = true;
         } else {
@@ -1438,14 +1456,15 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
         const size_t total = full_manifest.size();
         const size_t start = std::min<size_t>(query.cursor, total);
         const size_t end = std::min<size_t>(total, start + page_size);
+        const uint32_t snapshot_id = snapshotOtaManifest(full_manifest, msg);
 
         out.type = DescriptorResponseType::OtaManifest;
-        out.ota_manifest.assign(full_manifest.begin() + static_cast<std::ptrdiff_t>(start),
-                                full_manifest.begin() + static_cast<std::ptrdiff_t>(end));
+        slicePageInPlace(full_manifest, start, end);
+        out.ota_manifest = std::move(full_manifest);
         finalizePageMeta(query,
                          total,
                          end - start,
-                         snapshotOtaManifest(full_manifest, msg),
+                         snapshot_id,
                          out);
         out.message = msg;
         return true;
@@ -1514,6 +1533,7 @@ bool handleDescriptorQuery(IDescriptorProvider& provider,
 
 bool encodeDescriptorResponse(const DescriptorResponse& response, std::string& out_payload) {
   std::vector<uint8_t> out;
+  out.reserve(ProtocolCodec::kMaxPayload);
   bool truncated = false;
   uint16_t paged_emitted_count = 0;
   uint16_t paged_returned_count = response.returned_count;

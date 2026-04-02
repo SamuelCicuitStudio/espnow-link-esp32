@@ -115,11 +115,14 @@ class PairingStore {
     bool known = false;
     bool exists = false;
     std::vector<uint8_t> value{};
+    uint32_t last_used = 0;
   };
 
   bool putBlobIfChanged(const std::string& key, const uint8_t* data, size_t len);
   bool getBlobCached(const std::string& key, std::vector<uint8_t>& out);
   bool eraseBlobIfExists(const std::string& key);
+  void markBlobCacheEntryUsed_(BlobCacheEntry& entry);
+  void enforceBlobCacheLimit_(const std::string* preserve_key = nullptr);
 
   std::string makeMetaKey(const MacAddress& local, const MacAddress& peer, uint8_t slot) const;
   std::string makeLocalMetaKey(const MacAddress& local, const char* prefix, uint8_t salt) const;
@@ -134,6 +137,7 @@ class PairingStore {
   PersistenceConfig config_;
   IPersistenceBackend* backend_ = nullptr;
   std::unordered_map<std::string, BlobCacheEntry> blob_cache_{};
+  uint32_t blob_cache_access_seq_ = 0U;
 };
 
 }  // namespace espnow_link

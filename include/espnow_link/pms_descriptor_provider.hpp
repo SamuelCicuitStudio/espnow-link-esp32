@@ -77,6 +77,9 @@ class PmsDescriptorProvider : public IDescriptorProvider, public ITelemetryPushP
   uint16_t loadU16_(const char* key, uint16_t fallback) const;
   std::string loadString_(const char* key, const char* fallback) const;
   float loadFloat_(const char* key, float fallback) const;
+  bool ensureSettingsCache_() const;
+  bool rebuildSettingsCache_(std::vector<SettingDescriptor>& out) const;
+  void invalidateSettingsCache_();
 
   static constexpr const char* kSettingNameKey = "cfg_name";
   static constexpr const char* kSettingChannelKey = "cfg_ch";
@@ -112,6 +115,8 @@ class PmsDescriptorProvider : public IDescriptorProvider, public ITelemetryPushP
   IStorageExplorerProvider* storage_ = nullptr;
   OtaDescriptorAdapter* ota_ = nullptr;
   PmsDescriptorProviderConfig cfg_{};
+  mutable std::vector<SettingDescriptor> settings_cache_{};
+  mutable bool settings_cache_valid_ = false;
 };
 
 }  // namespace espnow_link

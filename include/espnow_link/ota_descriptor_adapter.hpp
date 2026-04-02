@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,7 @@ class OtaDescriptorAdapter {
   bool writeManifestFile_(const OtaManifestEntry& entry, std::string& out_message);
   bool listImageManifest_(std::vector<OtaManifestEntry>& out, std::string& out_message);
   bool clearDirContents_(const std::string& dir_path, std::string& out_message);
+  bool ensureIoScratch_(size_t size);
   bool clearOtaScopeInternal_(const std::string& scope,
                               std::string& out_message,
                               bool allow_archive);
@@ -55,6 +57,7 @@ class OtaDescriptorAdapter {
   OtaManager& manager_;
   IOtaStorageBackend& storage_;
   OtaManagerConfig config_;
+  std::vector<uint8_t> io_scratch_{};
   uint32_t last_checked_image_bytes_ = 0;
   bool last_fit_ = true;
 };

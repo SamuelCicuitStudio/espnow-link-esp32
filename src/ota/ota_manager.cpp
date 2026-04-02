@@ -687,9 +687,12 @@ bool OtaManager::loadStatusRecord_(PersistentStatusRecord& out_record, std::stri
     return false;
   }
 
-  std::vector<uint8_t> buf(static_cast<size_t>(st.size_bytes), 0U);
+  if (!ensureIoScratch_(static_cast<size_t>(st.size_bytes))) {
+    out_message = "status buffer allocation failed";
+    return false;
+  }
   size_t read_len = 0U;
-  if (!storage_.readAt(path, 0U, buf.data(), buf.size(), read_len, msg)) {
+  if (!storage_.readAt(path, 0U, io_scratch_.data(), static_cast<size_t>(st.size_bytes), read_len, msg)) {
     out_message = msg.empty() ? "status read failed" : msg;
     return false;
   }
@@ -698,8 +701,8 @@ bool OtaManager::loadStatusRecord_(PersistentStatusRecord& out_record, std::stri
     return true;
   }
 
-  const std::string text(reinterpret_cast<const char*>(buf.data()),
-                         reinterpret_cast<const char*>(buf.data() + read_len));
+  const std::string text(reinterpret_cast<const char*>(io_scratch_.data()),
+                         reinterpret_cast<const char*>(io_scratch_.data() + read_len));
   size_t pos = 0U;
   while (pos < text.size()) {
     size_t end = text.find('\n', pos);
@@ -943,6 +946,14 @@ bool OtaManager::clearDirContents_(const std::string& dir_path, std::string& out
   }
   out_message = "ok";
   return true;
+}
+
+bool OtaManager::ensureIoScratch_(size_t size) {
+  if (io_scratch_.capacity() < size) {
+    io_scratch_.reserve(size);
+  }
+  io_scratch_.resize(size);
+  return io_scratch_.size() == size;
 }
 
 bool OtaManager::ensurePsramPool_(std::string& out_message) {

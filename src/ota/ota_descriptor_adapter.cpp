@@ -309,13 +309,16 @@ bool OtaDescriptorAdapter::computeFileCrc_(const std::string& image_path,
     return crc;
   };
 
-  std::vector<uint8_t> buf(4096U, 0U);
+  if (!ensureIoScratch_(4096U)) {
+    out_message = "crc buffer allocation failed";
+    return false;
+  }
   uint32_t offset = 0U;
   uint32_t running_crc = 0xFFFFFFFFU;
   while (offset < target_size) {
-    const size_t req = std::min<size_t>(buf.size(), static_cast<size_t>(target_size - offset));
+    const size_t req = std::min<size_t>(io_scratch_.size(), static_cast<size_t>(target_size - offset));
     size_t out_len = 0U;
-    if (!storage_.readAt(image_path, offset, buf.data(), req, out_len, msg)) {
+    if (!storage_.readAt(image_path, offset, io_scratch_.data(), req, out_len, msg)) {
       out_message = msg.empty() ? "read failed" : msg;
       return false;
     }
@@ -323,7 +326,7 @@ bool OtaDescriptorAdapter::computeFileCrc_(const std::string& image_path,
       out_message = "read returned zero";
       return false;
     }
-    running_crc = crcUpdate(running_crc, buf.data(), out_len);
+    running_crc = crcUpdate(running_crc, io_scratch_.data(), out_len);
     offset += static_cast<uint32_t>(out_len);
 #if defined(ARDUINO)
     if ((offset & 0xFFFFU) == 0U) {
@@ -355,9 +358,12 @@ bool OtaDescriptorAdapter::parseManifestFile_(const std::string& manifest_path,
     return false;
   }
 
-  std::vector<uint8_t> buf(static_cast<size_t>(st.size_bytes), 0U);
+  if (!ensureIoScratch_(static_cast<size_t>(st.size_bytes))) {
+    out_message = "manifest buffer allocation failed";
+    return false;
+  }
   size_t read_len = 0U;
-  if (!storage_.readAt(manifest_path, 0U, buf.data(), buf.size(), read_len, msg)) {
+  if (!storage_.readAt(manifest_path, 0U, io_scratch_.data(), static_cast<size_t>(st.size_bytes), read_len, msg)) {
     out_message = msg.empty() ? "manifest read failed" : msg;
     return false;
   }
@@ -375,8 +381,8 @@ bool OtaDescriptorAdapter::parseManifestFile_(const std::string& manifest_path,
     return true;
   };
 
-  const std::string text(reinterpret_cast<const char*>(buf.data()),
-                         reinterpret_cast<const char*>(buf.data() + read_len));
+  const std::string text(reinterpret_cast<const char*>(io_scratch_.data()),
+                         reinterpret_cast<const char*>(io_scratch_.data() + read_len));
   size_t pos = 0U;
   while (pos < text.size()) {
     size_t end = text.find('\n', pos);
@@ -572,6 +578,14 @@ bool OtaDescriptorAdapter::clearDirContents_(const std::string& dir_path, std::s
   }
   out_message = "ok";
   return true;
+}
+
+bool OtaDescriptorAdapter::ensureIoScratch_(size_t size) {
+  if (io_scratch_.capacity() < size) {
+    io_scratch_.reserve(size);
+  }
+  io_scratch_.resize(size);
+  return io_scratch_.size() == size;
 }
 
 bool OtaDescriptorAdapter::getOtaStatus(OtaStatusInfo& out, std::string& out_message) {

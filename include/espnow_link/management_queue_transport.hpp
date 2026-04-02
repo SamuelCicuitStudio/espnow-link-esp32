@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <utility>
 
 #include "espnow_link/management_transport.hpp"
 
@@ -57,7 +58,7 @@ class ManagementQueueTransport final : public IManagementTransport {
   ManagementAccessLevel accessLevel() const override { return cfg_.access_level; }
 
   /** @brief Frontend-side: enqueue one outbound request for runtime processing. */
-  bool enqueueRequest(const ManagementRequest& request) {
+  bool enqueueRequest(ManagementRequest request) {
     const QueueAdmissionResult admission =
         makeRoom_(requests_, cfg_.max_requests, cfg_.request_overflow_policy);
     if (admission == QueueAdmissionResult::Rejected) {
@@ -67,7 +68,7 @@ class ManagementQueueTransport final : public IManagementTransport {
     if (admission == QueueAdmissionResult::DroppedOldest) {
       ++request_stats_.dropped_oldest;
     }
-    requests_.push_back(request);
+    requests_.push_back(std::move(request));
     ++request_stats_.enqueued;
     return true;
   }
@@ -75,7 +76,7 @@ class ManagementQueueTransport final : public IManagementTransport {
   /** @brief Frontend-side: poll one response emitted by runtime. */
   bool pollResponse(ManagementResponse& out_response) {
     if (responses_.empty()) return false;
-    out_response = responses_.front();
+    out_response = std::move(responses_.front());
     responses_.pop_front();
     return true;
   }
@@ -83,7 +84,7 @@ class ManagementQueueTransport final : public IManagementTransport {
   /** @brief Frontend-side: poll one event emitted by runtime. */
   bool pollEvent(ManagementEvent& out_event) {
     if (events_.empty()) return false;
-    out_event = events_.front();
+    out_event = std::move(events_.front());
     events_.pop_front();
     return true;
   }
@@ -105,7 +106,7 @@ class ManagementQueueTransport final : public IManagementTransport {
   /** @brief Runtime-side: pop one request from frontend queue. */
   bool pollRequest(ManagementRequest& out_request) override {
     if (requests_.empty()) return false;
-    out_request = requests_.front();
+    out_request = std::move(requests_.front());
     requests_.pop_front();
     return true;
   }
