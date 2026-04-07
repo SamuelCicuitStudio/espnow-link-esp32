@@ -12,5 +12,7 @@ constexpr espnow_link::ProfileId kAppProfileSemu = espnow_link::kProfileSemu;
 constexpr espnow_link::ProfileId kAppProfileRemu = espnow_link::kProfileRemu;
 // Keep custom profile IDs <= 255 because pair-init currently carries profile in one byte.
 constexpr espnow_link::ProfileId kAppProfileIcm = 0x21;
+constexpr espnow_link::ProfileId kAppProfileLock = 0x22;
+constexpr espnow_link::ProfileId kAppProfileAlarm = 0x23;
 
 }  // namespace app_owned

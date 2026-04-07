@@ -5,12 +5,14 @@
 #include "profile_catalog/slaves/sens/sens_master_schema_package.hpp"
 #include "profile_catalog/slaves/semu/semu_master_schema_package.hpp"
 #include "profile_catalog/slaves/remu/remu_master_schema_package.hpp"
+#include "profile_catalog/slaves/lock/lock_master_schema_package.hpp"
+#include "profile_catalog/slaves/alarm/alarm_master_schema_package.hpp"
 
 namespace app_owned {
 
 std::vector<MasterSchemaPackage> makeSupportedSlaveMasterSchemas(espnow_link::CodecId codec_id) {
   std::vector<MasterSchemaPackage> out;
-  out.reserve(5);
+  out.reserve(7);
 
   // Implemented slave package(s)
   out.push_back(makePmsMasterSchemaPackage(codec_id));
@@ -18,6 +20,8 @@ std::vector<MasterSchemaPackage> makeSupportedSlaveMasterSchemas(espnow_link::Co
   out.push_back(makeSensMasterSchemaPackage(codec_id));
   out.push_back(makeSemuMasterSchemaPackage(codec_id));
   out.push_back(makeRemuMasterSchemaPackage(codec_id));
+  out.push_back(makeLockMasterSchemaPackage(codec_id));
+  out.push_back(makeAlarmMasterSchemaPackage(codec_id));
 
   return out;
 }

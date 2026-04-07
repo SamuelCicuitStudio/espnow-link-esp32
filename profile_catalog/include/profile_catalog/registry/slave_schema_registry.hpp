@@ -16,6 +16,8 @@ namespace app_owned {
  * - SENS
  * - SEMU
  * - REMU
+ * - LOCK
+ * - ALARM
  *
  * Extend this file as additional slave packages are implemented.
  */
