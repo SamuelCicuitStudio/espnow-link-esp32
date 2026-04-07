@@ -14,5 +14,6 @@ constexpr espnow_link::ProfileId kAppProfileRemu = espnow_link::kProfileRemu;
 constexpr espnow_link::ProfileId kAppProfileIcm = 0x21;
 constexpr espnow_link::ProfileId kAppProfileLock = 0x22;
 constexpr espnow_link::ProfileId kAppProfileAlarm = 0x23;
+constexpr espnow_link::ProfileId kAppProfileMla = 0x24;
 
 }  // namespace app_owned

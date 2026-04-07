@@ -84,11 +84,6 @@ constexpr EventDef kEventDefs[] = {
   X(0x0003, ROLE, String, "lock", "lock|alarm", 0U, 0U, false, 0.0f, 0.0f, false) \
   X(0x0004, CHAN, Int, "1", nullptr, 1U, 14U, true, 0.0f, 0.0f, false) \
   X(0x0005, CFGED, Bool, "0", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
-  X(0x0006, MSTRMC, String, "00:00:00:00:00:00", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
-  X(0x0007, MSLMK, String, "", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
-  X(0x0008, SPMAX, Int, "15", nullptr, 1U, 15U, true, 0.0f, 0.0f, false) \
-  X(0x0009, SPLIST, String, "[]", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
-  X(0x000A, PRTMO, Int, "15000", nullptr, 1000U, 120000U, true, 0.0f, 0.0f, false) \
   X(0x000B, ARMED, Bool, "0", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
   X(0x000C, MOTEN, Bool, "0", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
   X(0x000D, BRCHL, Bool, "0", nullptr, 0U, 0U, false, 0.0f, 0.0f, false) \
@@ -338,7 +333,8 @@ bool LockAppDescriptorProvider::getCapabilities(std::vector<espnow_link::Capabil
   out.push_back({"metmap", PCAT_LOCK_METMAP});
   out.push_back({"evmap", PCAT_LOCK_EVMAP});
   out.push_back({"cmdset", "gdesc,gcaps,gtel,pull,glive,gtime,stime,gset,sset,ota,log,sd"});
-  out.push_back({"secure_peers", "Configured secure peer ceiling <= 15"});
+  out.push_back({"secure_peers", "Hard max 15 secure peers (link runtime managed)"});
+  out.push_back({"link_key_ownership", "PMK/LMK/pairing internals managed by espnow-link runtime"});
   return true;
 }
 

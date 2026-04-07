@@ -2,6 +2,7 @@
 
 // Master profiles
 #include "profile_catalog/masters/icm/icm_keys.hpp"
+#include "profile_catalog/masters/mla/mla_keys.hpp"
 
 // Slave profiles
 #include "profile_catalog/slaves/alarm/alarm_keys.hpp"

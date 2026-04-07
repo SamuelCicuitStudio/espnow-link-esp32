@@ -16,6 +16,7 @@
 #define PCAT_LOCK_KEY_ROLE "role"
 #define PCAT_LOCK_KEY_CHAN "chan"
 #define PCAT_LOCK_KEY_CFGED "cfged"
+// Link-internal pairing/security keys (not app-facing settings in SETMAP).
 #define PCAT_LOCK_KEY_MSTRMC "mstrmc"
 #define PCAT_LOCK_KEY_MSLMK "mslmk"
 #define PCAT_LOCK_KEY_SPMAX "spmax"
@@ -119,11 +120,6 @@
 #define PCAT_LOCK_SET_ROLE "role_mode"
 #define PCAT_LOCK_SET_CHAN "channel"
 #define PCAT_LOCK_SET_CFGED "configured"
-#define PCAT_LOCK_SET_MSTRMC "master_mac"
-#define PCAT_LOCK_SET_MSLMK "master_lmk_hex"
-#define PCAT_LOCK_SET_SPMAX "secure_peer_max"
-#define PCAT_LOCK_SET_SPLIST "secure_peer_list"
-#define PCAT_LOCK_SET_PRTMO "pair_timeout_ms"
 #define PCAT_LOCK_SET_ARMED "armed"
 #define PCAT_LOCK_SET_MOTEN "motion_enabled"
 #define PCAT_LOCK_SET_BRCHL "breach_latched"
@@ -246,7 +242,7 @@
 #define PCAT_LOCK_EVT_SLPWAKE "sleep_wake"
 
 #define PCAT_LOCK_SETMAP                                                                                                             \
-  "device_name,device_id,role_mode,channel,configured,master_mac,master_lmk_hex,secure_peer_max,secure_peer_list,pair_timeout_ms," \
+  "device_name,device_id,role_mode,channel,configured,"                                                                              \
   "armed,motion_enabled,breach_latched,current_time_epoch_s,last_time_epoch_s,cap_open_button,cap_reed,cap_accel,cap_fingerprint,"  \
   "cap_motor,cap_fuel_gauge,cap_rgb,boot_active_level,user_active_level,reed_active_level,btn_debounce_ms,reed_debounce_ms,"        \
   "btn_hold_ms,btn_consecutive_gap_ms,btn_finalize_ms,combo_boot_user_enable,combo_finalize_ms,low_battery_pct,emergency_battery_pct," \
